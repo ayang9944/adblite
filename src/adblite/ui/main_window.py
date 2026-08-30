@@ -21,8 +21,7 @@ from PySide6.QtWidgets import (
 from ..domain import ConnectionHistory, CustomCommand, Device
 from ..infrastructure import AdbClient, BinaryResolver, ProcessRunner, SettingsRepository
 
-# Replace this URL with your GitHub repository after creating it.
-GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite.git"
+GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite"
 
 DARK_STYLE = """
 * { font-family: \"Segoe UI\", \"Microsoft YaHei UI\", sans-serif; font-size: 13px; }
@@ -123,14 +122,14 @@ class ScrcpyHandle:
             return self.process.poll()
         if not self.pid:
             return 0
-        result = subprocess.run(["tasklist", "/FI", f"PID eq {self.pid}", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(["tasklist", "/FI", f"PID eq {self.pid}", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=ProcessRunner._hidden_window_flags())
         return None if str(self.pid) in result.stdout else 0
 
     def terminate(self) -> None:
         if self.process:
             self.process.terminate()
         elif self.pid:
-            subprocess.run(["taskkill", "/PID", str(self.pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(self.pid), "/T", "/F"], capture_output=True, creationflags=ProcessRunner._hidden_window_flags())
 
 
 class MainWindow(QMainWindow):
@@ -326,7 +325,10 @@ class MainWindow(QMainWindow):
         for label, field, key, binary in [("adb 路径", self.adb_path, "adb_path", "adb"), ("scrcpy 路径", self.scrcpy_path, "scrcpy_path", "scrcpy")]:
             row = QHBoxLayout(); row.addWidget(field, 1); browse = QPushButton("选择"); browse.clicked.connect(lambda _, f=field: self.pick_binary(f)); row.addWidget(browse); form.addRow(label, row)
         save = QPushButton("保存设置"); save.setObjectName("primaryButton"); save.clicked.connect(self.save_settings); form.addRow(save)
-        form.addRow(QLabel(f"配置文件：{self.repo.path}"))
+        config_row = QHBoxLayout()
+        self.config_path = QLineEdit(str(self.repo.path)); self.config_path.setReadOnly(True); self.config_path.setToolTip("当前实际使用的配置文件路径"); config_row.addWidget(self.config_path, 1)
+        copy_config_path = QPushButton("复制路径"); copy_config_path.clicked.connect(lambda: QApplication.clipboard().setText(self.config_path.text())); config_row.addWidget(copy_config_path)
+        form.addRow("配置文件", config_row)
         project_link = QLabel(f'<a href="{GITHUB_PROJECT_URL}">GitHub 开源项目主页：{GITHUB_PROJECT_URL}</a>')
         project_link.setObjectName("projectLink")
         project_link.setOpenExternalLinks(True)
@@ -812,7 +814,7 @@ class MainWindow(QMainWindow):
             return
         command = "Get-CimInstance Win32_Process -Filter \"Name='scrcpy.exe'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
         try:
-            result = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+            result = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, creationflags=ProcessRunner._hidden_window_flags())
             payload = json.loads(result.stdout) if result.stdout.strip() else []
             if isinstance(payload, dict):
                 payload = [payload]

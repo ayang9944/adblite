@@ -103,6 +103,10 @@ class BinaryResolver:
 
 class ProcessRunner:
     @staticmethod
+    def _hidden_window_flags() -> int:
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+    @staticmethod
     def _decode_output(value: bytes | str) -> str:
         if isinstance(value, str):
             return value
@@ -126,7 +130,7 @@ class ProcessRunner:
     def run(program: str, args: list[str], timeout: int = 120, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
         if not program:
             raise FileNotFoundError("未找到可执行文件，请在设置中配置路径")
-        result = subprocess.run([program, *args], capture_output=True, text=False, timeout=timeout, cwd=cwd)
+        result = subprocess.run([program, *args], capture_output=True, text=False, timeout=timeout, cwd=cwd, creationflags=ProcessRunner._hidden_window_flags())
         return subprocess.CompletedProcess(
             result.args,
             result.returncode,
@@ -138,7 +142,7 @@ class ProcessRunner:
     def start(program: str, args: list[str], cwd: str | None = None) -> subprocess.Popen[str]:
         if not program:
             raise FileNotFoundError("未找到可执行文件，请在设置中配置路径")
-        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | ProcessRunner._hidden_window_flags()
         return subprocess.Popen([program, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", cwd=cwd, creationflags=flags)
 
 
