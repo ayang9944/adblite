@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QProcess, QThread, QTimer, Signal, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -22,6 +22,7 @@ from ..domain import ConnectionHistory, CustomCommand, Device
 from ..infrastructure import AdbClient, BinaryResolver, ProcessRunner, SettingsRepository
 
 GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite"
+APP_VERSION = "0.1.1"
 
 DARK_STYLE = """
 * { font-family: \"Segoe UI\", \"Microsoft YaHei UI\", sans-serif; font-size: 13px; }
@@ -154,12 +155,14 @@ class MainWindow(QMainWindow):
         self.scrcpy_processes: dict[str, ScrcpyHandle] = {}
         self.shell_processes: dict[str, QProcess] = {}
         self.shell_privileged: dict[str, bool] = {}
+        self.shell_logs: dict[str, str] = {}
+        self.shell_terminal_lines: dict[str, tuple[str, int]] = {}
         self.shell_process: QProcess | None = None
         self.shell_serial = ""
         self._last_selected_serial = ""
         self._threads: set[QThread] = set()
         self._jobs: set[Job] = set()
-        self.setWindowTitle("ADBLite — ADB · Scrcpy · 快捷命令")
+        self.setWindowTitle(f"ADBLite v{APP_VERSION} — ADB · Scrcpy · 快捷命令")
         self.resize(1100, 720)
         self._build_ui()
         self.scrcpy_log.connect(self._append_scrcpy_log)
@@ -309,7 +312,13 @@ class MainWindow(QMainWindow):
         open_shell = QPushButton("进入 Shell"); open_shell.setObjectName("primaryButton"); open_shell.clicked.connect(self.start_shell)
         close_shell = QPushButton("关闭会话"); close_shell.setObjectName("dangerButton"); close_shell.clicked.connect(self.stop_shell)
         toolbar.addWidget(open_shell); toolbar.addWidget(close_shell); layout.addLayout(toolbar)
-        self.shell_output = QPlainTextEdit(); self.shell_output.setReadOnly(True); self.shell_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap); layout.addWidget(self.shell_output, 1)
+        log_container = QWidget(); log_layout = QVBoxLayout(log_container); log_layout.setContentsMargins(0, 0, 0, 0)
+        log_header = QHBoxLayout(); log_header.addWidget(QLabel("Shell 日志")); log_header.addStretch()
+        copy_shell = QPushButton("复制日志"); copy_shell.clicked.connect(self.copy_shell_log); log_header.addWidget(copy_shell)
+        clear_shell = QPushButton("清除日志"); clear_shell.clicked.connect(self.clear_shell_log); log_header.addWidget(clear_shell)
+        log_layout.addLayout(log_header)
+        self.shell_output = QPlainTextEdit(); self.shell_output.setReadOnly(True); self.shell_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap); log_layout.addWidget(self.shell_output, 1)
+        layout.addWidget(log_container, 1)
         input_row = QHBoxLayout(); self.shell_prompt_label = QLabel("$"); self.shell_prompt_label.setObjectName("shellPrompt"); input_row.addWidget(self.shell_prompt_label); self.shell_input = QLineEdit(); self.shell_input.setPlaceholderText("输入设备端命令，例如 getprop ro.product.model（↑/↓ 可调用历史命令）"); self.shell_input.installEventFilter(self); self.shell_input.textEdited.connect(self._shell_input_edited); self.shell_input.returnPressed.connect(self.send_shell_input); input_row.addWidget(self.shell_input, 1)
         send = QPushButton("发送"); send.setObjectName("primaryButton"); send.clicked.connect(self.send_shell_input); input_row.addWidget(send); layout.addLayout(input_row)
         return page
@@ -334,6 +343,7 @@ class MainWindow(QMainWindow):
         project_link.setOpenExternalLinks(True)
         project_link.setToolTip(GITHUB_PROJECT_URL)
         form.addRow("项目地址", project_link)
+        form.addRow("软件版本", QLabel(f"v{APP_VERSION}"))
         return page
 
     def pick_binary(self, field: QLineEdit) -> None:
@@ -403,6 +413,16 @@ class MainWindow(QMainWindow):
             self._last_selected_serial = self.current_serial()
         self._initial_device_scan_done = True
         self._reload_history()
+        serial = self.current_serial()
+        if serial:
+            if self.shell_serial != serial:
+                process = self.shell_processes.get(serial)
+                self.shell_process = process if process and process.state() != QProcess.ProcessState.NotRunning else None
+                self.shell_serial = serial if self.shell_process else ""
+            self._set_shell_log_view(serial, keep_position=True)
+        else:
+            self._set_shell_log_view("")
+        self._update_scrcpy_status(serial)
 
     def current_serial(self) -> str:
         return str(self.device_combo.currentData() or "")
@@ -424,7 +444,7 @@ class MainWindow(QMainWindow):
                     target_process = self.shell_processes.get(serial)
                     target_state = target_process.state() if target_process else QProcess.ProcessState.NotRunning
                     target_note = "已有 Shell 会话" if target_state != QProcess.ProcessState.NotRunning else "尚未进入 Shell"
-                    self.shell_output.appendPlainText(f"\n切换设备：{previous_serial} → {serial}（{target_note}，其他设备会话保持连接）")
+                    self._append_shell_log(serial, f"\n切换设备：{previous_serial} → {serial}（{target_note}，其他设备会话保持连接）\n")
                 if self.shell_serial != serial:
                     self.shell_process = self.shell_processes.get(serial)
                     self.shell_serial = serial if self.shell_process and self.shell_process.state() != QProcess.ProcessState.NotRunning else ""
@@ -433,6 +453,75 @@ class MainWindow(QMainWindow):
                     self.shell_target.setText(f"待连接设备：{serial}")
                 else:
                     self.shell_target.setText(f"当前设备：{serial}")
+                self._set_shell_log_view(serial)
+            self._update_scrcpy_status(serial)
+        else:
+            self._set_shell_log_view("")
+            self._update_scrcpy_status("")
+
+    def _set_shell_log_view(self, serial: str, keep_position: bool = False) -> None:
+        if not hasattr(self, "shell_output"):
+            return
+        scrollbar = self.shell_output.verticalScrollBar()
+        old_value = scrollbar.value()
+        was_at_bottom = old_value >= scrollbar.maximum() - 2
+        content = self.shell_logs.get(serial, "") if serial else ""
+        if self.shell_output.toPlainText() == content:
+            return
+        self.shell_output.setPlainText(content)
+        if keep_position and not was_at_bottom:
+            scrollbar.setValue(min(old_value, scrollbar.maximum()))
+        else:
+            cursor = self.shell_output.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.shell_output.setTextCursor(cursor)
+            self.shell_output.ensureCursorVisible()
+
+    def _append_shell_log(self, serial: str, text: str) -> None:
+        if not serial:
+            serial = self.current_serial()
+        if not serial:
+            return
+        previous = self.shell_logs.get(serial, "")
+        if "\u5207\u6362\u8bbe\u5907\uff1a" in text and text in previous:
+            return
+        if previous and not previous.endswith("\n") and not text.startswith("\n"):
+            text = "\n" + text
+        self.shell_logs[serial] = previous + text
+        if serial != self.current_serial() or not hasattr(self, "shell_output"):
+            return
+        scrollbar = self.shell_output.verticalScrollBar()
+        old_value = scrollbar.value()
+        was_at_bottom = old_value >= scrollbar.maximum() - 2
+        # Insert through a separate document cursor so an existing user
+        # selection remains intact while new output arrives.
+        doc_cursor = QTextCursor(self.shell_output.document())
+        doc_cursor.movePosition(QTextCursor.MoveOperation.End)
+        doc_cursor.insertText(text)
+        if was_at_bottom:
+            self.shell_output.moveCursor(QTextCursor.MoveOperation.End)
+            self.shell_output.ensureCursorVisible()
+        else:
+            scrollbar.setValue(min(old_value, scrollbar.maximum()))
+
+    def copy_shell_log(self) -> None:
+        serial = self.current_serial()
+        QApplication.clipboard().setText(self.shell_logs.get(serial, "") if serial else "")
+
+    def clear_shell_log(self) -> None:
+        serial = self.current_serial()
+        if serial:
+            self.shell_logs[serial] = ""
+            self.shell_terminal_lines.pop(serial, None)
+        self._set_shell_log_view(serial)
+
+    def _scrcpy_is_running(self, serial: str) -> bool:
+        process = self.scrcpy_processes.get(serial)
+        return bool(process and process.poll() is None)
+
+    def _update_scrcpy_status(self, serial: str = "") -> None:
+        serial = serial or self.current_serial()
+        self._update_device_marker(serial)
 
     def run_adb(self, args: list[str]) -> None:
         serial = self.current_serial()
@@ -464,7 +553,7 @@ class MainWindow(QMainWindow):
             return self._show_error("请先选择设备")
         existing = self.shell_processes.get(serial)
         if existing and existing.state() != QProcess.ProcessState.NotRunning:
-            self.shell_output.appendPlainText("Shell 会话已经在运行中")
+            self._append_shell_log(serial, "Shell 会话已经在运行中\n")
             self.shell_process = existing
             self.shell_serial = serial
             self._update_device_shell_marker(serial)
@@ -476,6 +565,7 @@ class MainWindow(QMainWindow):
         self.shell_serial = serial
         self.shell_privileged[serial] = False
         self.shell_process = QProcess(self)
+        setattr(self.shell_process, "_adblite_serial", serial)
         self.shell_processes[serial] = self.shell_process
         self.shell_process.setProgram(adb_path)
         # -tt forces a remote pseudo-terminal even though QProcess stdin is
@@ -488,7 +578,7 @@ class MainWindow(QMainWindow):
         self.shell_process.start()
         self._update_device_shell_marker(serial)
         self.shell_target.setText(f"当前设备：{serial}")
-        self.shell_output.appendPlainText(f"$ adb -s {serial} shell -tt\nShell 已连接（伪终端模式），可以输入命令。\n")
+        self._append_shell_log(serial, f"$ adb -s {serial} shell -tt\nShell 已连接（伪终端模式），可以输入命令。\n")
         self._update_shell_prompt(serial)
         self.shell_input.setFocus()
 
@@ -569,12 +659,25 @@ class MainWindow(QMainWindow):
 
     def stop_shell(self) -> None:
         serial = self.shell_serial or self.current_serial()
+        process = self.shell_processes.get(serial) if serial else None
+        if process and process.state() != QProcess.ProcessState.NotRunning:
+            process.terminate()
+            setattr(process, "_adblite_serial", serial)
+            self._append_shell_log(serial, f"[{serial}] Shell \u4f1a\u8bdd\u5df2\u5173\u95ed\n")
+            self.shell_processes.pop(serial, None)
+            self.shell_privileged.pop(serial, None)
+            self._update_device_shell_marker(serial)
+            self.shell_process = None
+            self.shell_serial = ""
+            self._update_shell_prompt()
+            self.shell_target.setText("未连接")
+            return
         if self.shell_process and self.shell_process.state() != QProcess.ProcessState.NotRunning:
             self.shell_process.terminate()
-            self.shell_output.appendPlainText(f"[{serial}] Shell 会话已关闭")
+            self._append_shell_log(serial, f"[{serial}] Shell 会话已关闭\n")
         elif serial:
-            self.shell_output.appendPlainText(f"[{serial}] 没有正在运行的 Shell 会话")
-        if serial:
+            self._append_shell_log(serial, f"[{serial}] 没有正在运行的 Shell 会话\n")
+        if serial and (not self.shell_process or self.shell_process.state() == QProcess.ProcessState.NotRunning):
             self.shell_processes.pop(serial, None)
             self.shell_privileged.pop(serial, None)
             self._update_device_shell_marker(serial)
@@ -588,33 +691,64 @@ class MainWindow(QMainWindow):
         if isinstance(process, QProcess):
             text = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
             if text:
-                self._append_shell_terminal_text(text)
+                serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", self.shell_serial))
+                self._append_shell_terminal_text(text, serial)
 
-    def _append_shell_terminal_text(self, text: str) -> None:
+    def _append_shell_terminal_text(self, text: str, serial: str = "") -> None:
         """Render common terminal control sequences in the shell log."""
         text = ANSI_ESCAPE_RE.sub("", text)
         # QPlainTextEdit cannot overwrite a line on carriage return. Turning
         # progress updates into separate lines keeps curl and similar tools
         # readable instead of leaving control characters in the log.
-        text = re.sub(r"\r+\n", "\n", text).replace("\r", "\n")
-        self.shell_output.insertPlainText(text)
-        self.shell_output.ensureCursorVisible()
+        if not serial:
+            serial = self.current_serial()
+        if not serial:
+            return
+        line, cursor_pos = self.shell_terminal_lines.get(serial, ("", 0))
+        emitted: list[str] = []
+        prompt_re = re.compile(r"([\w.-]+:/[^\r\n]*?[#$]\s)")
+        for char in text:
+            if char == "\n":
+                emitted.append(line + "\n")
+                line, cursor_pos = "", 0
+                continue
+            if char == "\r":
+                cursor_pos = 0
+                continue
+            if cursor_pos < len(line):
+                line = line[:cursor_pos] + char + line[cursor_pos + 1:]
+            else:
+                line += char
+            cursor_pos += 1
+            match = prompt_re.search(line)
+            if match and match.start() > 0:
+                emitted.append(line[:match.start()] + "\n" + line[match.start():])
+                line, cursor_pos = "", 0
+            elif match and match.start() == 0 and match.end() == len(line):
+                # A complete prompt can be displayed immediately even though
+                # interactive shells do not terminate it with LF.
+                emitted.append(line + "\n")
+                line, cursor_pos = "", 0
+        self.shell_terminal_lines[serial] = (line, cursor_pos)
+        if emitted:
+            self._append_shell_log(serial, "".join(emitted))
 
     def _read_shell_stderr(self) -> None:
         process = self.sender()
         if isinstance(process, QProcess):
             text = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
             if text:
-                self._append_shell_terminal_text(text)
+                serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", self.shell_serial))
+                self._append_shell_terminal_text(text, serial)
 
     def _shell_finished(self, exit_code: int, _status) -> None:
         process = self.sender()
-        serial = next((key for key, value in self.shell_processes.items() if value is process), "")
+        serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", ""))
         if serial:
             self.shell_processes.pop(serial, None)
             self.shell_privileged.pop(serial, None)
             self._update_device_shell_marker(serial)
-        self.shell_output.appendPlainText(f"\n[{serial or '未知设备'}] Shell 已退出，退出码：{exit_code}")
+        self._append_shell_log(serial, f"\n[{serial or '未知设备'}] Shell 已退出，退出码：{exit_code}\n")
         if process is self.shell_process:
             self.shell_process = None
             self.shell_serial = ""
@@ -743,10 +877,19 @@ class MainWindow(QMainWindow):
         return bool(process and process.state() != QProcess.ProcessState.NotRunning)
 
     def _device_combo_text(self, device: Device) -> str:
-        marker = " · Shell 已连接" if self._shell_is_running(device.serial) else ""
-        return f"{device.label} · {device.state}{marker}"
+        markers = []
+        if self._shell_is_running(device.serial):
+            markers.append("Shell 已连接")
+        if self._scrcpy_is_running(device.serial):
+            markers.append("Scrcpy 已连接")
+        suffix = " · " + " · ".join(markers) if markers else ""
+        return f"{device.label} · {device.state}{suffix}"
 
     def _update_device_shell_marker(self, serial: str) -> None:
+        """Refresh one device label without changing the selected device."""
+        self._update_device_marker(serial)
+
+    def _update_device_marker(self, serial: str) -> None:
         """Refresh one device label without changing the selected device."""
         if not hasattr(self, "device_combo"):
             return
@@ -773,6 +916,7 @@ class MainWindow(QMainWindow):
         try:
             process = ProcessRunner.start(self.resolver.resolve("scrcpy"), args)
             self.scrcpy_processes[serial] = ScrcpyHandle(process=process, serial=serial, log_callback=self._emit_scrcpy_log)
+            self._update_scrcpy_status(serial)
             self.scrcpy_output.appendPlainText("启动：scrcpy " + " ".join(args))
         except Exception as exc: self._show_error(str(exc))
 
@@ -783,10 +927,12 @@ class MainWindow(QMainWindow):
         process = self.scrcpy_processes.get(serial)
         if not process or process.poll() is not None:
             self.scrcpy_processes.pop(serial, None)
+            self._update_scrcpy_status(serial)
             self.scrcpy_output.appendPlainText(f"{serial} 当前没有运行中的 scrcpy")
             return
         process.terminate()
         self.scrcpy_processes.pop(serial, None)
+        self._update_scrcpy_status(serial)
         self.scrcpy_output.appendPlainText(f"{serial} 的 scrcpy 已停止")
 
     def _emit_scrcpy_log(self, serial: str, line: str) -> None:
