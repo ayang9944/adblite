@@ -22,7 +22,7 @@ from ..domain import ConnectionHistory, CustomCommand, Device
 from ..infrastructure import AdbClient, BinaryResolver, ProcessRunner, SettingsRepository
 
 GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 
 DARK_STYLE = """
 * { font-family: \"Segoe UI\", \"Microsoft YaHei UI\", sans-serif; font-size: 13px; }
@@ -290,10 +290,12 @@ class MainWindow(QMainWindow):
         args_label = QLabel("参数/命令"); args_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         editor.addRow("名称", self.cmd_name); editor.addRow("执行器", self.cmd_runner); editor.addRow(args_label, self.cmd_args)
         row = QHBoxLayout(); row.setSpacing(6)
+        new_command = QPushButton("新建")
+        new_command.clicked.connect(self.new_command)
         save = QPushButton("保存"); save.clicked.connect(self.save_command)
         run = QPushButton("运行"); run.setObjectName("primaryButton"); run.clicked.connect(self.run_command)
         delete = QPushButton("删除"); delete.setObjectName("dangerButton"); delete.clicked.connect(self.delete_command)
-        for button in (save, run, delete):
+        for button in (new_command, save, run, delete):
             row.addWidget(button, 1)
         editor.addRow(row)
 
@@ -308,6 +310,9 @@ class MainWindow(QMainWindow):
         page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(12)
         title = QLabel("设备 Shell"); title.setObjectName("pageTitle"); layout.addWidget(title)
         hint = QLabel("连接当前设备的持久 ADB Shell 会话（伪终端模式，支持列布局和交互式命令）"); hint.setObjectName("pageHint"); layout.addWidget(hint)
+        shell_notice = QLabel("提示：Shell 功能尚不完善，推荐优先使用设备原生终端功能。")
+        shell_notice.setObjectName("pageHint")
+        layout.addWidget(shell_notice)
         toolbar = QHBoxLayout(); self.shell_target = QLabel("未连接"); self.shell_target.setObjectName("statusLabel"); toolbar.addWidget(self.shell_target, 1)
         open_shell = QPushButton("进入 Shell"); open_shell.setObjectName("primaryButton"); open_shell.clicked.connect(self.start_shell)
         close_shell = QPushButton("关闭会话"); close_shell.setObjectName("dangerButton"); close_shell.clicked.connect(self.stop_shell)
@@ -344,6 +349,7 @@ class MainWindow(QMainWindow):
         project_link.setToolTip(GITHUB_PROJECT_URL)
         form.addRow("项目地址", project_link)
         form.addRow("软件版本", QLabel(f"v{APP_VERSION}"))
+        form.addRow("软件作者", QLabel("luobida"))
         return page
 
     def pick_binary(self, field: QLineEdit) -> None:
@@ -984,6 +990,17 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(commands):
             command = commands[index]; self.cmd_name.setText(command.name); self.cmd_runner.setCurrentText(command.runner); self.cmd_args.setPlainText(command.command if command.runner == "cmd" else "\n".join(command.args))
 
+    def new_command(self) -> None:
+        """Clear the current selection and prepare the editor for a new item."""
+        self.command_list.blockSignals(True)
+        self.command_list.clearSelection()
+        self.command_list.setCurrentRow(-1)
+        self.command_list.blockSignals(False)
+        self.cmd_name.clear()
+        self.cmd_runner.setCurrentText("cmd")
+        self.cmd_args.clear()
+        self.cmd_name.setFocus()
+
     def save_command(self) -> None:
         name = self.cmd_name.text().strip()
         if not name: return self._show_error("命令名称不能为空")
@@ -1000,14 +1017,46 @@ class MainWindow(QMainWindow):
         row = self.command_list.currentRow(); commands = self.repo.commands()
         if not (0 <= row < len(commands)): return self._show_error("请先选择命令")
         command = commands[row]; serial = self.current_serial()
-        if command.device_required and not serial: return self._show_error("该命令需要先选择设备")
         if command.runner == "adb": fn = lambda: self.adb.run(command.args, serial)
-        elif command.runner == "scrcpy": fn = lambda: ProcessRunner.run(self.resolver.resolve("scrcpy"), ["--serial", serial, *command.args])
+        elif command.runner == "scrcpy":
+            scrcpy_target = ["--serial", serial] if serial else []
+            fn = lambda: ProcessRunner.run(self.resolver.resolve("scrcpy"), [*scrcpy_target, *command.args])
         elif command.runner == "process": fn = lambda: ProcessRunner.run(command.args[0], command.args[1:])
         else:
             rendered = command.command.replace("${serial}", serial).replace("${adb}", self.resolver.resolve("adb")).replace("${scrcpy}", self.resolver.resolve("scrcpy"))
-            fn = lambda: ProcessRunner.run("cmd.exe", ["/d", "/s", "/c", rendered])
+            cmdline = rendered.strip()
+            # A quoted executable path (especially one containing spaces) is
+            # best launched directly. Passing it through ``cmd /c`` via a
+            # subprocess argument list escapes the quotes on Windows, causing
+            # cmd.exe to report that the command is not recognized.
+            direct = re.match(r'^\s*"([^"\r\n]+)"(?:\s+(.*))?\s*$', cmdline, re.S)
+            shell_operators = ("&&", "||", "|", ">", "<")
+            if direct and not any(operator in cmdline for operator in shell_operators):
+                executable = direct.group(1)
+                argument_text = direct.group(2) or ""
+                arguments = shlex.split(argument_text, posix=False) if argument_text else []
+                arguments = [
+                    item[1:-1] if len(item) >= 2 and item[0] == item[-1] == '"' else item
+                    for item in arguments
+                ]
+                fn = lambda: self._launch_local_process(executable, arguments)
+            else:
+                fn = lambda: ProcessRunner.run("cmd.exe", ["/d", "/s", "/c", cmdline])
         self._run_async(fn, lambda result: self._show_result(self.command_output, result))
+
+    @staticmethod
+    def _launch_local_process(executable: str, arguments: list[str]) -> subprocess.CompletedProcess:
+        """Start a local GUI process without waiting for it to exit."""
+        flags = ProcessRunner._hidden_window_flags() | getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(
+            [executable, *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+            close_fds=True,
+        )
+        return subprocess.CompletedProcess([executable, *arguments], 0, "", "")
 
     def _show_result(self, target: QPlainTextEdit, result) -> None:
         target.appendPlainText(f"退出码：{result.returncode}\n{result.stdout}{result.stderr}".strip())

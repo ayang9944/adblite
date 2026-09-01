@@ -37,5 +37,5 @@ class CustomCommand:
     args: list[str] = field(default_factory=list)
     command: str = ""
     group: str = "常用"
-    device_required: bool = True
+    device_required: bool = False
     confirm: bool = False
