@@ -63,4 +63,4 @@ Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet
 
 连接历史保存在 `%APPDATA%/ADBLite/settings.json`。历史只保存地址、名称和最近使用时间，不保存设备数据。
 
-Shell 页面使用 `adb -s SERIAL shell` 持久进程，支持持续输入命令和实时输出；它不是完整的 ANSI 终端模拟器，暂不保证全屏交互式程序（例如 vim、top）的显示效果。
+Shell 页面使用非 PTY 的 `adb -s SERIAL shell` 持久进程，支持持续输入命令和实时输出，并避免交互式行编辑器造成长命令回显错乱；它不是完整的 ANSI 终端模拟器，不支持需要真实终端的程序（例如 vim、top）。

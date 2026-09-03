@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import shlex
 import subprocess
 import ipaddress
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ..domain import ConnectionHistory, CustomCommand, Device
 from ..infrastructure import AdbClient, BinaryResolver, ProcessRunner, SettingsRepository
+from ..terminal import TerminalLogState, flush_terminal_log, render_terminal_log
 
 GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite"
 APP_VERSION = "0.1.2"
@@ -64,8 +66,6 @@ QScrollBar::handle:vertical { background: #475569; border-radius: 5px; min-heigh
 QPlainTextEdit { font-family: Consolas, \"Cascadia Mono\", monospace; font-size: 12px; }
 QStatusBar { background: #0F172A; color: #94A3B8; }
 """
-
-ANSI_ESCAPE_RE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
 
 LIGHT_STYLE = DARK_STYLE.replace("#111827", "#F4F7FB").replace("#182235", "#FFFFFF").replace("#151E2E", "#E9EEF6").replace("#202C41", "#DCE7F5").replace("#2B3950", "#CBD5E1").replace("#334155", "#B8C4D4").replace("#263449", "#E7EDF5").replace("#3B4A61", "#AAB8CA").replace("#E5E7EB", "#1F2937").replace("#F8FAFC", "#0F172A").replace("#94A3B8", "#64748B").replace("#CBD5E1", "#334155").replace("#1D4ED8", "#1D4ED8").replace("#0F172A", "#E2E8F0")
 # Keep the shortcut visually integrated with either palette.
@@ -156,7 +156,8 @@ class MainWindow(QMainWindow):
         self.shell_processes: dict[str, QProcess] = {}
         self.shell_privileged: dict[str, bool] = {}
         self.shell_logs: dict[str, str] = {}
-        self.shell_terminal_lines: dict[str, tuple[str, int]] = {}
+        self.shell_terminal_states: dict[str, TerminalLogState] = {}
+        self.shell_decoders = {}
         self.shell_process: QProcess | None = None
         self.shell_serial = ""
         self._last_selected_serial = ""
@@ -309,7 +310,7 @@ class MainWindow(QMainWindow):
     def _shell_page(self) -> QWidget:
         page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(12)
         title = QLabel("设备 Shell"); title.setObjectName("pageTitle"); layout.addWidget(title)
-        hint = QLabel("连接当前设备的持久 ADB Shell 会话（伪终端模式，支持列布局和交互式命令）"); hint.setObjectName("pageHint"); layout.addWidget(hint)
+        hint = QLabel("连接当前设备的持久 ADB Shell 会话（稳定日志模式，避免长命令回显错乱）"); hint.setObjectName("pageHint"); layout.addWidget(hint)
         shell_notice = QLabel("提示：Shell 功能尚不完善，推荐优先使用设备原生终端功能。")
         shell_notice.setObjectName("pageHint")
         layout.addWidget(shell_notice)
@@ -518,7 +519,7 @@ class MainWindow(QMainWindow):
         serial = self.current_serial()
         if serial:
             self.shell_logs[serial] = ""
-            self.shell_terminal_lines.pop(serial, None)
+            self.shell_terminal_states.pop(serial, None)
         self._set_shell_log_view(serial)
 
     def _scrcpy_is_running(self, serial: str) -> bool:
@@ -570,21 +571,24 @@ class MainWindow(QMainWindow):
             return self._show_error("未找到 adb，请先在设置中配置路径")
         self.shell_serial = serial
         self.shell_privileged[serial] = False
+        self.shell_terminal_states[serial] = TerminalLogState()
+        self.shell_decoders[serial] = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self.shell_process = QProcess(self)
         setattr(self.shell_process, "_adblite_serial", serial)
         self.shell_processes[serial] = self.shell_process
         self.shell_process.setProgram(adb_path)
-        # -tt forces a remote pseudo-terminal even though QProcess stdin is
-        # not itself a console, so ls/curl behave as in an interactive shell.
-        self.shell_process.setArguments(["-s", serial, "shell", "-tt"])
-        # Keep stdout/stderr in the order produced by the remote terminal.
+        # This UI is an input box plus an append-only log, not a terminal
+        # emulator. A forced PTY starts Android's interactive line editor,
+        # whose horizontal redraws corrupt long commands in the log.
+        self.shell_process.setArguments(["-s", serial, "shell"])
+        # Keep stdout/stderr in the order produced by the remote shell.
         self.shell_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.shell_process.readyReadStandardOutput.connect(self._read_shell_stdout)
         self.shell_process.finished.connect(self._shell_finished)
         self.shell_process.start()
         self._update_device_shell_marker(serial)
         self.shell_target.setText(f"当前设备：{serial}")
-        self._append_shell_log(serial, f"$ adb -s {serial} shell -tt\nShell 已连接（伪终端模式），可以输入命令。\n")
+        self._append_shell_log(serial, f"$ adb -s {serial} shell\nShell 已连接（稳定日志模式），可以输入命令。\n")
         self._update_shell_prompt(serial)
         self.shell_input.setFocus()
 
@@ -596,6 +600,8 @@ class MainWindow(QMainWindow):
             return
         serial = self.shell_serial or self.current_serial()
         self._remember_shell_command(command)
+        prompt = "#" if self.shell_privileged.get(serial, False) else "$"
+        self._append_shell_log(serial, f"{prompt} {command}\n")
         self.shell_process.write((command + "\n").encode("utf-8"))
         self._update_shell_privilege(serial, command)
         self.shell_input.clear()
@@ -695,61 +701,47 @@ class MainWindow(QMainWindow):
     def _read_shell_stdout(self) -> None:
         process = self.sender()
         if isinstance(process, QProcess):
-            text = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            data = bytes(process.readAllStandardOutput())
+            serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", self.shell_serial))
+            decoder = self.shell_decoders.setdefault(serial, codecs.getincrementaldecoder("utf-8")(errors="replace"))
+            text = decoder.decode(data)
             if text:
-                serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", self.shell_serial))
                 self._append_shell_terminal_text(text, serial)
 
     def _append_shell_terminal_text(self, text: str, serial: str = "") -> None:
         """Render common terminal control sequences in the shell log."""
-        text = ANSI_ESCAPE_RE.sub("", text)
-        # QPlainTextEdit cannot overwrite a line on carriage return. Turning
-        # progress updates into separate lines keeps curl and similar tools
-        # readable instead of leaving control characters in the log.
         if not serial:
             serial = self.current_serial()
         if not serial:
             return
-        line, cursor_pos = self.shell_terminal_lines.get(serial, ("", 0))
-        emitted: list[str] = []
-        prompt_re = re.compile(r"([\w.-]+:/[^\r\n]*?[#$]\s)")
-        for char in text:
-            if char == "\n":
-                emitted.append(line + "\n")
-                line, cursor_pos = "", 0
-                continue
-            if char == "\r":
-                cursor_pos = 0
-                continue
-            if cursor_pos < len(line):
-                line = line[:cursor_pos] + char + line[cursor_pos + 1:]
-            else:
-                line += char
-            cursor_pos += 1
-            match = prompt_re.search(line)
-            if match and match.start() > 0:
-                emitted.append(line[:match.start()] + "\n" + line[match.start():])
-                line, cursor_pos = "", 0
-            elif match and match.start() == 0 and match.end() == len(line):
-                # A complete prompt can be displayed immediately even though
-                # interactive shells do not terminate it with LF.
-                emitted.append(line + "\n")
-                line, cursor_pos = "", 0
-        self.shell_terminal_lines[serial] = (line, cursor_pos)
-        if emitted:
-            self._append_shell_log(serial, "".join(emitted))
+        state = self.shell_terminal_states.setdefault(serial, TerminalLogState())
+        rendered = render_terminal_log(text, state)
+        if rendered:
+            self._append_shell_log(serial, rendered)
 
     def _read_shell_stderr(self) -> None:
         process = self.sender()
         if isinstance(process, QProcess):
-            text = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
+            data = bytes(process.readAllStandardError())
+            serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", self.shell_serial))
+            decoder = self.shell_decoders.setdefault(serial, codecs.getincrementaldecoder("utf-8")(errors="replace"))
+            text = decoder.decode(data)
             if text:
-                serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", self.shell_serial))
                 self._append_shell_terminal_text(text, serial)
 
     def _shell_finished(self, exit_code: int, _status) -> None:
         process = self.sender()
         serial = next((key for key, value in self.shell_processes.items() if value is process), getattr(process, "_adblite_serial", ""))
+        decoder = self.shell_decoders.pop(serial, None)
+        if decoder:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                self._append_shell_terminal_text(tail, serial)
+        terminal_state = self.shell_terminal_states.pop(serial, None)
+        if terminal_state:
+            final_line = flush_terminal_log(terminal_state)
+            if final_line:
+                self._append_shell_log(serial, final_line)
         if serial:
             self.shell_processes.pop(serial, None)
             self.shell_privileged.pop(serial, None)
