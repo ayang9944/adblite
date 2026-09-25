@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import ctypes
 import shlex
 import subprocess
 import ipaddress
@@ -10,82 +11,223 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QProcess, QThread, QTimer, Signal, Qt
-from PySide6.QtGui import QAction, QTextCursor
+from PySide6.QtCore import QEvent, QObject, QProcess, QRect, QSize, QTimer, Signal, Slot, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QStackedWidget,
-    QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QFormLayout, QFrame, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
+    QSpinBox, QStackedWidget, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget,
+    QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
-from ..domain import ConnectionHistory, CustomCommand, Device
+from ..domain import ConnectionHistory, CustomCommand, Device, merge_device_statuses
 from ..infrastructure import AdbClient, BinaryResolver, ProcessRunner, SettingsRepository
 from ..terminal import TerminalLogState, flush_terminal_log, render_terminal_log
+from .terminal_window import DeviceTerminalWindow
 
 GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite"
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.2.0"
+
+
+def split_local_process_arguments(argument_text: str) -> list[str]:
+    """Parse arguments exactly as a native Windows process receives them."""
+    if not argument_text.strip():
+        return []
+    if sys.platform != "win32":
+        return shlex.split(argument_text, posix=False)
+
+    # CommandLineToArgvW treats argv[0] differently from all other arguments,
+    # so prepend a harmless placeholder and discard it after parsing.
+    command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+    command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+    command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    local_free = ctypes.windll.kernel32.LocalFree
+    local_free.argtypes = [ctypes.c_void_p]
+    local_free.restype = ctypes.c_void_p
+
+    argument_count = ctypes.c_int()
+    argument_values = command_line_to_argv(
+        f"placeholder.exe {argument_text}", ctypes.byref(argument_count),
+    )
+    if not argument_values:
+        raise ctypes.WinError()
+    try:
+        return [argument_values[index] for index in range(1, argument_count.value)]
+    finally:
+        local_free(argument_values)
+
+
+def interface_icon(name: str) -> QIcon:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+    return QIcon(str(base / "assets" / "icons" / f"{name}.svg"))
 
 DARK_STYLE = """
-* { font-family: \"Segoe UI\", \"Microsoft YaHei UI\", sans-serif; font-size: 13px; }
+* { font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; }
 QMainWindow, QWidget { background: #111827; color: #E5E7EB; }
-#topbar { background: #111827; border-bottom: 1px solid #2B3950; }
-#brand { color: #F8FAFC; font-size: 19px; font-weight: 700; }
-#brandMark { background: #2563EB; color: white; border-radius: 8px; font-size: 16px; font-weight: 800; min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; }
-#brandName { background: transparent; color: #F8FAFC; font-size: 18px; font-weight: 700; }
-#subtitle { color: #94A3B8; font-size: 11px; }
+#topbar { background: #151D2B; border-bottom: 1px solid #273449; }
+#brandName { color: #F8FAFC; font-size: 17px; font-weight: 700; padding-right: 12px; }
+#navTabs { background: transparent; border: none; }
+#navTabs::tab { background: transparent; color: #94A3B8; border: none; padding: 17px 14px 14px; }
+#navTabs::tab:hover { color: #E2E8F0; background: #1C2738; }
+#navTabs::tab:selected { color: #2DD4BF; font-weight: 600; border-bottom: 2px solid #14B8A6; }
 #pageTitle { color: #F8FAFC; font-size: 20px; font-weight: 700; }
-#pageHint { color: #94A3B8; font-size: 12px; }
-#primaryButton { background: #2563EB; border-color: #3B82F6; color: white; font-weight: 600; }
-#primaryButton:hover { background: #1D4ED8; }
-#dangerButton { background: #3A2028; border-color: #7F1D1D; color: #FCA5A5; }
-#dangerButton:hover { background: #7F1D1D; color: white; }
+#pageHint, #mutedLabel { color: #94A3B8; font-size: 12px; }
+#countBadge { background: #183B3A; color: #5EEAD4; border-radius: 10px; padding: 2px 8px; font-weight: 600; }
+#primaryButton { background: #0F8F83; border-color: #14B8A6; color: white; font-weight: 600; }
+#primaryButton:hover { background: #0D9488; }
+#dangerButton { color: #FDA4AF; }
 #statusLabel { background: #172033; border: 1px solid #2B3950; border-radius: 6px; padding: 7px 10px; color: #93C5FD; }
-#sidebar { background: #151E2E; border: none; padding: 12px 8px; }
-#sidebar::item { padding: 12px 14px; margin: 2px 0; border-radius: 7px; color: #94A3B8; }
-#sidebar::item:hover { background: #202C41; color: #E2E8F0; }
-#sidebar::item:selected { background: #2563EB; color: white; font-weight: 600; }
+#onlineBadge { background: transparent; color: #6EE7B7; padding: 3px 9px; font-weight: 600; }
+#warningBadge { background: transparent; color: #FCD34D; padding: 3px 9px; font-weight: 600; }
+#offlineBadge { background: transparent; color: #94A3B8; padding: 3px 9px; font-weight: 600; }
+#connectionBar { background: #151F2E; border: 1px solid #2B3950; border-radius: 9px; }
+#emptyPanel { background: #141D2B; border: 1px solid #2B3950; border-radius: 9px; }
+#emptyTitle { color: #E2E8F0; font-size: 16px; font-weight: 600; }
+#terminalHeader { background: #151D2B; border-bottom: 1px solid #273449; }
+#terminalDevice { background: #183B3A; color: #5EEAD4; border: 1px solid #245B57; border-radius: 5px; padding: 4px 9px; }
+#terminalSurface { background: #0B1220; color: #DCE7F5; border: none; border-radius: 0; padding: 10px; selection-background-color: #0F766E; font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; }
 QComboBox, QLineEdit, QSpinBox, QPlainTextEdit, QListWidget { background: #182235; border: 1px solid #334155; border-radius: 6px; padding: 7px; color: #E5E7EB; }
-QComboBox { font-size: 15px; min-height: 22px; }
-QComboBox QAbstractItemView { font-size: 15px; padding: 5px; }
-QComboBox:hover, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus { border-color: #3B82F6; }
-QPushButton { background: #263449; border: 1px solid #3B4A61; border-radius: 6px; padding: 8px 14px; color: #E5E7EB; }
-QPushButton:hover { background: #334766; border-color: #60A5FA; }
-QPushButton:pressed { background: #1D4ED8; }
-#themeToggleButton { background: #1E293B; border-color: #475569; padding-left: 11px; padding-right: 11px; }
-#themeToggleButton:hover { background: #334155; border-color: #60A5FA; }
-#shellPrompt { color: #93C5FD; font-family: Consolas, "Cascadia Mono", monospace; font-size: 15px; font-weight: 700; min-width: 16px; }
-#projectLink { color: #60A5FA; }
+QComboBox { min-height: 22px; }
+QComboBox:hover, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus { border-color: #14B8A6; }
+QPushButton, QToolButton { background: #223046; border: 1px solid #3B4A61; border-radius: 6px; padding: 7px 12px; color: #E5E7EB; }
+QPushButton:hover, QToolButton:hover { background: #2C405B; border-color: #2DD4BF; }
+QPushButton:disabled, QToolButton:disabled { color: #64748B; background: #1A2434; border-color: #2B3950; }
+#iconButton, #rowAction { background: transparent; border: none; border-radius: 16px; min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; }
+#iconButton:hover, #rowAction:hover { background: #183B3A; border-color: #245B57; }
+#rowAction::menu-indicator { image: none; width: 0; }
+#shellPrompt { color: #5EEAD4; font-family: Consolas, "Cascadia Mono", monospace; font-size: 15px; font-weight: 700; min-width: 16px; }
+#projectLink { color: #2DD4BF; }
 QGroupBox { border: 1px solid #2B3950; border-radius: 8px; margin-top: 12px; padding: 14px 10px 10px; font-weight: 600; color: #CBD5E1; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; background: #111827; }
 QListWidget::item { padding: 9px 8px; border-radius: 5px; }
-QListWidget::item:selected { background: #1D4ED8; color: white; }
+QListWidget::item:selected { background: #0F766E; color: white; }
+#deviceTable { background: #121B29; border: 1px solid #2B3950; border-radius: 8px; gridline-color: #263449; selection-background-color: transparent; selection-color: #5EEAD4; }
+#deviceTable::item { background: transparent; padding: 8px; border-bottom: 1px solid #263449; }
+#deviceTable::item:selected { background: transparent; color: #E5E7EB; }
+#deviceIdentifierCell, #deviceStatusCell, #deviceActionsCell { background: transparent; }
+#deviceIdentifierCell QLabel { background: transparent; }
+QHeaderView::section { background: #172131; color: #94A3B8; border: none; border-bottom: 1px solid #2B3950; padding: 9px; font-weight: 600; }
 QSplitter::handle { background: #334155; height: 5px; }
-QScrollBar:vertical { background: #111827; width: 10px; margin: 2px; }
+QScrollBar:vertical { background: transparent; width: 10px; }
 QScrollBar::handle:vertical { background: #475569; border-radius: 5px; min-height: 25px; }
-QPlainTextEdit { font-family: Consolas, \"Cascadia Mono\", monospace; font-size: 12px; }
-QStatusBar { background: #0F172A; color: #94A3B8; }
+QPlainTextEdit { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+QStatusBar { background: #0F172A; color: #94A3B8; border-top: 1px solid #273449; }
 """
 
-LIGHT_STYLE = DARK_STYLE.replace("#111827", "#F4F7FB").replace("#182235", "#FFFFFF").replace("#151E2E", "#E9EEF6").replace("#202C41", "#DCE7F5").replace("#2B3950", "#CBD5E1").replace("#334155", "#B8C4D4").replace("#263449", "#E7EDF5").replace("#3B4A61", "#AAB8CA").replace("#E5E7EB", "#1F2937").replace("#F8FAFC", "#0F172A").replace("#94A3B8", "#64748B").replace("#CBD5E1", "#334155").replace("#1D4ED8", "#1D4ED8").replace("#0F172A", "#E2E8F0")
-# Keep the shortcut visually integrated with either palette.
-LIGHT_STYLE += "\n#themeToggleButton { background: #FFFFFF; border-color: #AAB8CA; color: #1F2937; }\n#themeToggleButton:hover { background: #E7EDF5; border-color: #3B82F6; }\n"
-LIGHT_STYLE += "#brand, #brandName, #pageTitle { color: #0F172A; }\n#pageHint, #subtitle { color: #64748B; }\nQGroupBox { color: #334155; }\n"
+LIGHT_STYLE = DARK_STYLE
+for _dark, _light in (
+    ("#111827", "#F5F7FA"), ("#151D2B", "#FFFFFF"), ("#273449", "#E5E7EB"),
+    ("#F8FAFC", "#1F2937"), ("#94A3B8", "#6B7280"), ("#E2E8F0", "#374151"),
+    ("#1C2738", "#F0FDFA"), ("#172033", "#F0FDFA"), ("#2B3950", "#E5E7EB"),
+    ("#151F2E", "#FFFFFF"), ("#141D2B", "#FFFFFF"), ("#182235", "#FFFFFF"),
+    ("#334155", "#CBD5E1"), ("#223046", "#FFFFFF"), ("#3B4A61", "#CBD5E1"),
+    ("#2C405B", "#F0FDFA"), ("#1A2434", "#F3F4F6"), ("#121B29", "#FFFFFF"),
+    ("#263449", "#EEF0F3"), ("#172131", "#F8FAFC"), ("#0F172A", "#F8FAFC"),
+):
+    LIGHT_STYLE = LIGHT_STYLE.replace(_dark, _light)
+LIGHT_STYLE += """
+QMainWindow, QWidget { color: #1F2937; }
+QComboBox, QLineEdit, QSpinBox, QPlainTextEdit, QListWidget { color: #1F2937; }
+QPushButton, QToolButton { color: #374151; }
+QPushButton:disabled, QToolButton:disabled { color: #9CA3AF; }
+#countBadge { background: #CCFBF1; color: #0F766E; }
+#onlineBadge { background: transparent; color: #15803D; }
+#warningBadge { background: transparent; color: #B45309; }
+#offlineBadge { background: transparent; color: #64748B; }
+#iconButton, #rowAction { color: #0F8F83; }
+#iconButton:hover, #rowAction:hover { background: #F0FDFA; border-color: #99F6E4; }
+#deviceTable { color: #1F2937; selection-background-color: transparent; selection-color: #0F766E; }
+#deviceTable::item { background: transparent; color: #1F2937; }
+#deviceTable::item:selected { background: transparent; color: #1F2937; }
+#deviceIdentifierCell, #deviceStatusCell, #deviceActionsCell { background: transparent; }
+QGroupBox::title { background: #F5F7FA; }
+#terminalHeader { background: #FFFFFF; border-bottom-color: #E5E7EB; }
+#terminalDevice { background: #F0FDFA; color: #0F8F83; border-color: #CCFBF1; }
+#terminalSurface { background: #FCFCFD; color: #111827; selection-background-color: #99F6E4; }
+"""
 
 
-class Job(QObject):
-    done = Signal(object)
-    failed = Signal(str)
+class AsyncDispatcher(QObject):
+    done = Signal(int, object)
+    failed = Signal(int, str)
 
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
 
-    def run(self):
-        try:
-            self.done.emit(self.fn())
-        except Exception as exc:  # UI boundary: display the process error
-            self.failed.emit(str(exc))
+class HistoryItemDelegate(QStyledItemDelegate):
+    """Draw a delete affordance directly on each connection-history row."""
+
+    def __init__(self, combo: "HistoryComboBox") -> None:
+        super().__init__(combo)
+        self.combo = combo
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        text_option = QStyleOptionViewItem(option)
+        text_option.rect = option.rect.adjusted(0, 0, -34, 0)
+        super().paint(painter, text_option, index)
+
+        delete_rect = self.combo.delete_rect(option.rect)
+        hovered = index.row() == self.combo.delete_hover_row
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        if selected:
+            painter.fillRect(QRect(text_option.rect.right() + 1, option.rect.top(), 34, option.rect.height()), option.palette.highlight())
+        if hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            delete_background = "#4C1D24" if option.palette.base().color().lightness() < 128 else "#FEE2E2"
+            painter.setBrush(QColor(delete_background))
+            painter.drawEllipse(delete_rect.adjusted(3, 3, -3, -3))
+        color = QColor("#EF4444") if hovered else (option.palette.highlightedText().color() if selected else QColor("#94A3B8"))
+        pen = QPen(color, 1.35)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        center = delete_rect.center()
+        painter.drawLine(center.x() - 4, center.y() - 4, center.x() + 4, center.y() + 4)
+        painter.drawLine(center.x() + 4, center.y() - 4, center.x() - 4, center.y() + 4)
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
+        size = super().sizeHint(option, index)
+        return QSize(size.width() + 34, max(size.height(), 34))
+
+
+class HistoryComboBox(QComboBox):
+    removeRequested = Signal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.delete_hover_row = -1
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.setItemDelegate(HistoryItemDelegate(self))
+        self.view().setMouseTracking(True)
+        self.view().viewport().installEventFilter(self)
+
+    @staticmethod
+    def delete_rect(row_rect: QRect) -> QRect:
+        return QRect(row_rect.right() - 31, row_rect.top(), 32, row_rect.height())
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.view().viewport():
+            if event.type() == QEvent.Type.MouseMove:
+                index = self.view().indexAt(event.position().toPoint())
+                row = index.row() if index.isValid() and self.delete_rect(self.view().visualRect(index)).contains(event.position().toPoint()) else -1
+                if row != self.delete_hover_row:
+                    self.delete_hover_row = row
+                    self.view().viewport().update()
+            elif event.type() == QEvent.Type.Leave:
+                self.delete_hover_row = -1
+                self.view().viewport().update()
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                position = event.position().toPoint()
+                index = self.view().indexAt(position)
+                if index.isValid() and self.delete_rect(self.view().visualRect(index)).contains(position):
+                    address = index.data(Qt.ItemDataRole.UserRole)
+                    if address:
+                        self.hidePopup()
+                        self.removeRequested.emit(str(address))
+                    return True
+        return super().eventFilter(watched, event)
 
 
 class ScrcpyHandle:
@@ -154,6 +296,7 @@ class MainWindow(QMainWindow):
         # never overwrite the process handle of an existing session.
         self.scrcpy_processes: dict[str, ScrcpyHandle] = {}
         self.shell_processes: dict[str, QProcess] = {}
+        self.terminal_windows: dict[str, DeviceTerminalWindow] = {}
         self.shell_privileged: dict[str, bool] = {}
         self.shell_logs: dict[str, str] = {}
         self.shell_terminal_states: dict[str, TerminalLogState] = {}
@@ -161,122 +304,297 @@ class MainWindow(QMainWindow):
         self.shell_process: QProcess | None = None
         self.shell_serial = ""
         self._last_selected_serial = ""
-        self._threads: set[QThread] = set()
-        self._jobs: set[Job] = set()
+        self._refresh_in_progress = False
+        self._refresh_requested_manually = False
+        self._connection_busy = False
+        self._pending_disconnects: set[str] = set()
+        self._async_dispatcher = AsyncDispatcher(self)
+        self._async_dispatcher.done.connect(self._handle_job_done)
+        self._async_dispatcher.failed.connect(self._handle_job_failed)
+        self._next_job_token = 0
+        self._job_callbacks: dict[int, tuple[object, object]] = {}
+        self._async_threads: dict[int, threading.Thread] = {}
         self.setWindowTitle(f"ADBLite v{APP_VERSION} — ADB · Scrcpy · 快捷命令")
-        self.resize(1100, 720)
+        self.resize(1120, 720)
         self._build_ui()
         self.scrcpy_log.connect(self._append_scrcpy_log)
         self._discover_scrcpy_processes()
         self.refresh_devices()
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_devices)
-        self.timer.start(2500)
+        self.timer.timeout.connect(lambda: self.refresh_devices(manual=False))
+        self.timer.start(4000)
 
     def _build_ui(self) -> None:
-        self.apply_theme(self.repo.data.get("theme", "dark"))
+        self.apply_theme(self.repo.data.get("theme", "light"))
         root = QWidget(); root.setObjectName("root")
         layout = QVBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
         topbar = QWidget(); topbar.setObjectName("topbar")
-        header = QHBoxLayout(topbar); header.setContentsMargins(20, 10, 20, 10); header.setSpacing(0)
-        brand_wrap = QWidget(); brand_wrap.setFixedWidth(178)
-        brand_layout = QHBoxLayout(brand_wrap); brand_layout.setContentsMargins(2, 0, 0, 0); brand_layout.setSpacing(10)
-        brand = QLabel("ADBLite"); brand.setObjectName("brandName")
-        brand_layout.addWidget(brand, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter); header.addWidget(brand_wrap)
-        current_label = QLabel("当前设备"); current_label.setObjectName("pageTitle"); header.addWidget(current_label); header.addSpacing(12)
-        self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(420)
+        header = QHBoxLayout(topbar); header.setContentsMargins(18, 0, 14, 0); header.setSpacing(8)
+        brand = QLabel("ADBLite"); brand.setObjectName("brandName"); header.addWidget(brand)
+        self.navigation = QTabBar(); self.navigation.setObjectName("navTabs")
+        self.navigation.setDrawBase(False)
+        for item in ("设备", "快捷命令", "设置"):
+            self.navigation.addTab(item)
+        header.addWidget(self.navigation)
+        header.addStretch()
+        # The table is the single visible device selector. Keep this hidden
+        # model combo so existing shell/command logic can share the selection.
+        self.device_combo = QComboBox(self)
         self.device_combo.currentIndexChanged.connect(self._device_changed)
-        header.addWidget(self.device_combo, 1)
-        refresh = QPushButton("⟳  刷新"); refresh.setObjectName("primaryButton")
-        refresh.clicked.connect(self.refresh_devices)
-        header.addWidget(refresh)
-        header.addSpacing(8)
-        self.theme_toggle = QPushButton()
-        self.theme_toggle.setObjectName("themeToggleButton")
-        self.theme_toggle.setMinimumWidth(108)
-        self.theme_toggle.setToolTip("切换日间/夜间模式")
-        self.theme_toggle.setAccessibleName("主题模式切换")
-        self.theme_toggle.clicked.connect(self._toggle_theme)
+        self.device_combo.hide()
+        self.header_refresh_button = self._icon_button(
+            "refresh", "刷新设备", lambda: self.refresh_devices(manual=True), "iconButton",
+        )
+        header.addWidget(self.header_refresh_button)
+        self.theme_toggle = self._icon_button("moon", "切换到夜间模式", self._toggle_theme, "iconButton")
         header.addWidget(self.theme_toggle)
         self._update_theme_toggle()
         layout.addWidget(topbar)
 
-        body = QHBoxLayout(); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0)
-        self.navigation = QListWidget(); self.navigation.setObjectName("sidebar"); self.navigation.setFixedWidth(178)
-        for item in ("⌂   设备", "▣   Scrcpy", ">_  Shell", "⚡  快捷命令", "⚙   设置"):
-            self.navigation.addItem(item)
+        self.scrcpy_output = QPlainTextEdit(self); self.scrcpy_output.hide()
         self.page_stack = QStackedWidget()
-        self.page_stack.addWidget(self._devices_page()); self.page_stack.addWidget(self._scrcpy_page()); self.page_stack.addWidget(self._shell_page()); self.page_stack.addWidget(self._commands_page()); self.page_stack.addWidget(self._settings_page())
-        self.navigation.currentRowChanged.connect(self.page_stack.setCurrentIndex)
-        self.navigation.setCurrentRow(0)
-        body.addWidget(self.navigation); body.addWidget(self.page_stack, 1)
-        layout.addLayout(body, 1)
+        self.page_stack.addWidget(self._devices_page()); self.page_stack.addWidget(self._commands_page()); self.page_stack.addWidget(self._settings_page())
+        self.navigation.currentChanged.connect(self.page_stack.setCurrentIndex)
+        self.navigation.setCurrentIndex(0)
+        layout.addWidget(self.page_stack, 1)
         self.setCentralWidget(root)
         self.statusBar().showMessage("ADB 就绪 · 等待设备刷新")
 
     def _devices_page(self) -> QWidget:
-        page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(12)
-        title = QLabel("设备管理"); title.setObjectName("pageTitle"); layout.addWidget(title)
-        hint = QLabel("连接、选择并管理 ADB 设备"); hint.setObjectName("pageHint"); layout.addWidget(hint)
-        self.device_list = QListWidget()
-        self.device_list.currentRowChanged.connect(self._select_device_row)
-        device_group = QWidget(); device_group_layout = QVBoxLayout(device_group); device_group_layout.setContentsMargins(0, 0, 0, 0)
-        device_group_layout.addWidget(QLabel("已连接设备")); device_group_layout.addWidget(self.device_list)
-        actions = QHBoxLayout()
-        for text, fn in [("设备信息", self.show_device_info), ("重启系统", lambda: self.confirm_reboot(False)), ("重启 Recovery", lambda: self.confirm_reboot(True)), ("断开连接", self.disconnect_current)]:
-            button = QPushButton(text); button.clicked.connect(fn)
-            if text == "设备信息": button.setObjectName("primaryButton")
-            if text == "断开连接": button.setObjectName("dangerButton")
-            actions.addWidget(button)
-        layout.addLayout(actions)
-        self.device_output = QPlainTextEdit(); self.device_output.setReadOnly(True)
-        log_group = QWidget(); log_group_layout = QVBoxLayout(log_group); log_group_layout.setContentsMargins(0, 0, 0, 0)
-        log_header = QHBoxLayout(); log_header.addWidget(QLabel("操作日志")); log_header.addStretch()
-        copy_log = QPushButton("复制"); copy_log.clicked.connect(lambda: QApplication.clipboard().setText(self.device_output.toPlainText()))
-        clear_log = QPushButton("清空"); clear_log.clicked.connect(self.device_output.clear)
-        log_header.addWidget(copy_log); log_header.addWidget(clear_log); log_group_layout.addLayout(log_header); log_group_layout.addWidget(self.device_output)
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(device_group); splitter.addWidget(log_group)
-        splitter.setStretchFactor(0, 3); splitter.setStretchFactor(1, 1); splitter.setSizes([360, 150])
-        layout.addWidget(splitter, 1)
+        page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(18, 16, 18, 12); layout.setSpacing(10)
+        toolbar = QHBoxLayout(); toolbar.setSpacing(8)
+        title = QLabel("设备"); title.setObjectName("pageTitle"); toolbar.addWidget(title)
+        self.device_count = QLabel("0 台"); self.device_count.setObjectName("countBadge"); toolbar.addWidget(self.device_count)
+        toolbar.addStretch()
+        self.device_search = QLineEdit(); self.device_search.setPlaceholderText("搜索设备名称或标识")
+        self.device_search.setClearButtonEnabled(True); self.device_search.setMaximumWidth(260)
+        self.device_search.textChanged.connect(self._filter_devices); toolbar.addWidget(self.device_search)
+        layout.addLayout(toolbar)
 
-        history_box = QGroupBox("连接历史（断开后仍保留）")
-        history_layout = QVBoxLayout(history_box)
-        row = QHBoxLayout()
-        self.history_combo = QComboBox(); row.addWidget(self.history_combo, 1)
-        connect = QPushButton("连接"); connect.setObjectName("primaryButton"); connect.clicked.connect(self.connect_history); row.addWidget(connect)
-        copy = QPushButton("复制"); copy.clicked.connect(self.copy_history); row.addWidget(copy)
-        edit = QPushButton("编辑"); edit.clicked.connect(self.edit_history); row.addWidget(edit)
-        remove = QPushButton("删除"); remove.setObjectName("dangerButton"); remove.clicked.connect(self.remove_history); row.addWidget(remove)
-        history_layout.addLayout(row)
-        add = QPushButton("添加无线地址")
-        add.clicked.connect(self.add_history)
-        history_layout.addWidget(add, alignment=Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(history_box)
+        self.device_stack = QStackedWidget()
+        self.device_table = QTableWidget(0, 4); self.device_table.setObjectName("deviceTable")
+        self.device_table.setHorizontalHeaderLabels(["设备标识", "设备名称", "状态", "操作"])
+        self.device_table.verticalHeader().setVisible(False)
+        self.device_table.setShowGrid(False); self.device_table.setAlternatingRowColors(False)
+        self.device_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.device_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.device_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.device_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        device_header = self.device_table.horizontalHeader()
+        device_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        device_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        device_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        device_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.device_table.setColumnWidth(0, 260)
+        self.device_table.setColumnWidth(1, 180)
+        self.device_table.setColumnWidth(2, 120)
+        # Keep enough room for every primary action; long identifiers and
+        # model names are elided in their cells and remain available as tips.
+        self.device_table.setMinimumWidth(840)
+        self.device_table.itemSelectionChanged.connect(self._device_table_selection_changed)
+        self.device_table.cellDoubleClicked.connect(lambda row, _column: self._run_device_action(row, self.start_scrcpy))
+        self.device_stack.addWidget(self.device_table)
+        empty = QFrame(); empty.setObjectName("emptyPanel")
+        empty_layout = QVBoxLayout(empty); empty_layout.addStretch()
+        empty_icon = QLabel("⌁"); empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter); empty_icon.setStyleSheet("font-size: 34px; color: #14B8A6;")
+        empty_title = QLabel("还没有发现设备"); empty_title.setObjectName("emptyTitle"); empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_hint = QLabel("连接 USB 设备，或在下方输入无线调试地址"); empty_hint.setObjectName("mutedLabel"); empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(empty_icon); empty_layout.addWidget(empty_title); empty_layout.addWidget(empty_hint); empty_layout.addStretch()
+        self.device_stack.addWidget(empty)
+        self.device_stack.setCurrentIndex(1)
+        layout.addWidget(self.device_stack, 1)
+
+        self.device_output = QPlainTextEdit(); self.device_output.setReadOnly(True); self.device_output.setMaximumHeight(125); self.device_output.hide()
+        log_header = QHBoxLayout(); self.log_toggle = QToolButton(); self.log_toggle.setText("操作记录  ▾")
+        self.log_toggle.setCheckable(True); self.log_toggle.toggled.connect(self._toggle_device_log); log_header.addWidget(self.log_toggle)
+        log_header.addStretch()
+        copy_log = QToolButton(); copy_log.setText("复制"); copy_log.clicked.connect(lambda: QApplication.clipboard().setText(self.device_output.toPlainText())); log_header.addWidget(copy_log)
+        clear_log = QToolButton(); clear_log.setText("清空"); clear_log.clicked.connect(self.device_output.clear); log_header.addWidget(clear_log)
+        layout.addLayout(log_header)
+        layout.addWidget(self.device_output)
+
+        connection_bar = QFrame(); connection_bar.setObjectName("connectionBar")
+        history_layout = QHBoxLayout(connection_bar); history_layout.setContentsMargins(12, 9, 10, 9); history_layout.setSpacing(8)
+        connection_label = QLabel("⌁  无线连接"); connection_label.setObjectName("mutedLabel"); history_layout.addWidget(connection_label)
+        self.history_combo = HistoryComboBox()
+        self.history_combo.setMinimumWidth(260)
+        self.history_combo.lineEdit().setPlaceholderText("IP:端口，例如 192.168.1.20:5555")
+        self.history_combo.currentIndexChanged.connect(self._history_selection_changed)
+        self.history_combo.removeRequested.connect(self.remove_history)
+        self.history_combo.lineEdit().returnPressed.connect(self.connect_history); history_layout.addWidget(self.history_combo, 1)
+        self.connect_button = QPushButton("连接设备"); self.connect_button.setObjectName("primaryButton"); self.connect_button.clicked.connect(self.connect_history); history_layout.addWidget(self.connect_button)
+        self.discovery_button = QPushButton("自动发现"); self.discovery_button.clicked.connect(self.discover_wireless); history_layout.addWidget(self.discovery_button)
+        layout.addWidget(connection_bar)
         self._reload_history()
         return page
 
-    def _scrcpy_page(self) -> QWidget:
-        page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(12)
-        title = QLabel("Scrcpy 控制台"); title.setObjectName("pageTitle"); layout.addWidget(title)
-        hint = QLabel("为当前设备配置画面参数并管理独立投屏会话"); hint.setObjectName("pageHint"); layout.addWidget(hint)
-        content = QHBoxLayout(); content.setSpacing(14)
-        settings_box = QGroupBox("投屏配置"); form = QFormLayout(settings_box); settings_box.setMaximumWidth(390)
-        self.scrcpy_size = QSpinBox(); self.scrcpy_size.setRange(0, 8192); self.scrcpy_size.setValue(1920)
-        self.scrcpy_fps = QSpinBox(); self.scrcpy_fps.setRange(0, 240); self.scrcpy_fps.setValue(60)
-        self.scrcpy_bitrate = QLineEdit("8M")
-        self.scrcpy_extra = QLineEdit()
-        self.scrcpy_no_audio = QPushButton("禁用音频：否"); self.scrcpy_no_audio.setCheckable(True)
+    def _toggle_device_log(self, visible: bool) -> None:
+        self.device_output.setVisible(visible)
+        self.log_toggle.setText("操作记录  ▴" if visible else "操作记录  ▾")
+
+    def _show_device_log(self) -> None:
+        if not self.log_toggle.isChecked():
+            self.log_toggle.setChecked(True)
+
+    def _filter_devices(self, text: str) -> None:
+        needle = text.strip().lower()
+        for row, device in enumerate(self.devices):
+            haystack = f"{device.serial} {device.model} {device.state}".lower()
+            self.device_table.setRowHidden(row, bool(needle and needle not in haystack))
+
+    def _device_table_selection_changed(self) -> None:
+        row = self.device_table.currentRow()
+        if 0 <= row < len(self.devices):
+            self._select_device_serial(self.devices[row].serial)
+
+    def _select_device_serial(self, serial: str) -> None:
+        index = self.device_combo.findData(serial)
+        if index >= 0 and self.device_combo.currentIndex() != index:
+            self.device_combo.setCurrentIndex(index)
+
+    def _run_device_action(self, row: int, action) -> None:
+        if not 0 <= row < len(self.devices):
+            return
+        self._select_device_serial(self.devices[row].serial)
+        action()
+
+    @staticmethod
+    def _icon_button(icon_name: str, tooltip: str, callback=None, object_name: str = "rowAction") -> QToolButton:
+        button = QToolButton()
+        button.setObjectName(object_name)
+        button.setIcon(interface_icon(icon_name))
+        button.setIconSize(QSize(17, 17))
+        button.setFixedSize(32, 32)
+        button.setAutoRaise(True)
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
+        button.setProperty("actionName", icon_name)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        if callback:
+            button.clicked.connect(callback)
+        return button
+
+    def _open_device_shell(self, row: int) -> None:
+        if not 0 <= row < len(self.devices):
+            return
+        device = self.devices[row]
+        existing = self.terminal_windows.get(device.serial)
+        if existing:
+            existing.showNormal() if existing.isMinimized() else existing.show()
+            existing.raise_(); existing.activateWindow()
+            return
+        adb_path = self.resolver.resolve("adb")
+        if not adb_path:
+            return self._show_error("未找到 adb，请先在设置中配置路径")
+        terminal = DeviceTerminalWindow(
+            adb_path, device.serial, device.model or device.serial,
+            self.repo.data.get("terminal_theme", "light"),
+        )
+        terminal.theme_change_requested.connect(self.apply_terminal_theme)
+        terminal.closed.connect(self._terminal_window_closed)
+        self.terminal_windows[device.serial] = terminal
+        terminal.show(); terminal.raise_(); terminal.activateWindow()
+        self._update_device_shell_marker(device.serial)
+
+    def _terminal_window_closed(self, terminal: DeviceTerminalWindow) -> None:
+        if self.terminal_windows.get(terminal.serial) is terminal:
+            self.terminal_windows.pop(terminal.serial, None)
+        self._update_device_shell_marker(terminal.serial)
+
+    def _device_status(self, device: Device) -> tuple[str, str]:
+        if device.state == "device":
+            return "已连接", "onlineBadge"
+        if device.state == "unauthorized":
+            return "等待授权", "warningBadge"
+        if device.state == "offline":
+            return "离线", "offlineBadge"
+        labels = {"recovery": "恢复模式", "bootloader": "引导模式", "sideload": "侧载模式"}
+        return labels.get(device.state, device.state or "未知"), "warningBadge"
+
+    def _render_device_table(self) -> None:
+        if not hasattr(self, "device_table"):
+            return
+        selected = self.current_serial()
+        self.device_table.blockSignals(True)
+        self.device_table.setRowCount(len(self.devices))
+        for row, device in enumerate(self.devices):
+            connection = "无线" if ":" in device.serial else "USB"
+            identifier_wrap = QWidget(); identifier_wrap.setObjectName("deviceIdentifierCell")
+            identifier_wrap.setToolTip(f"{connection} 设备 · {device.serial}")
+            identifier_wrap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            identifier_layout = QHBoxLayout(identifier_wrap); identifier_layout.setContentsMargins(10, 0, 10, 0); identifier_layout.setSpacing(6)
+            connection_icon = QLabel(); connection_icon.setFixedSize(18, 18)
+            connection_icon.setPixmap(interface_icon("wifi" if connection == "无线" else "usb").pixmap(18, 18))
+            connection_icon.setToolTip(f"{connection} 设备")
+            identifier_text = QLabel(device.serial); identifier_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            identifier_text.setToolTip(f"{connection} 设备 · {device.serial}")
+            identifier_spacer = QLabel(); identifier_spacer.setFixedSize(18, 18)
+            identifier_layout.addWidget(connection_icon)
+            identifier_layout.addStretch()
+            identifier_layout.addWidget(identifier_text)
+            identifier_layout.addStretch()
+            identifier_layout.addWidget(identifier_spacer)
+
+            name_item = QTableWidgetItem(device.model or "未知设备")
+            name_item.setToolTip(device.model or "ADB 未返回设备型号")
+            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.device_table.setCellWidget(row, 0, identifier_wrap); self.device_table.setItem(row, 1, name_item)
+
+            status_text, status_style = self._device_status(device)
+            status_wrap = QWidget(); status_wrap.setObjectName("deviceStatusCell"); status_layout = QHBoxLayout(status_wrap); status_layout.setContentsMargins(6, 0, 8, 0)
+            status = QLabel(status_text); status.setObjectName(status_style); status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_layout.addStretch(); status_layout.addWidget(status); status_layout.addStretch()
+            self.device_table.setCellWidget(row, 2, status_wrap)
+
+            actions = QWidget(); actions.setObjectName("deviceActionsCell"); actions.setMinimumWidth(244)
+            action_layout = QHBoxLayout(actions); action_layout.setContentsMargins(8, 0, 4, 0); action_layout.setSpacing(6)
+            enabled = device.state == "device" and not self._connection_busy
+            action_layout.addStretch()
+            action_specs = [
+                ("monitor", "启动 Scrcpy 投屏（双击设备行也可启动）", lambda _=False, r=row: self._run_device_action(r, self.start_scrcpy), enabled),
+                ("terminal", "打开当前设备的独立终端窗口", lambda _=False, r=row: self._open_device_shell(r), enabled),
+                ("info", "读取设备信息", lambda _=False, r=row: self._run_device_action(r, self.show_device_info), enabled),
+            ]
+            if ":" in device.serial and device.state == "offline":
+                action_specs.append(("connect", "重新连接无线 ADB", lambda _=False, r=row: self._connect_device_row(r), not self._connection_busy))
+            else:
+                action_specs.append(("disconnect", "断开无线 ADB", lambda _=False, r=row: self._run_device_action(r, self.disconnect_current), enabled and ":" in device.serial))
+            action_specs.extend((
+                ("restart", "重启系统", lambda _=False, r=row: self._run_device_action(r, lambda: self.confirm_reboot(False)), enabled),
+                ("recovery", "重启到 Recovery", lambda _=False, r=row: self._run_device_action(r, lambda: self.confirm_reboot(True)), enabled),
+            ))
+            for icon_name, tooltip, callback, action_enabled in action_specs:
+                button = self._icon_button(icon_name, tooltip, callback)
+                button.setEnabled(action_enabled); action_layout.addWidget(button)
+            action_layout.addStretch()
+            self.device_table.setCellWidget(row, 3, actions)
+            self.device_table.setRowHeight(row, 52)
+            if device.serial == selected:
+                self.device_table.selectRow(row)
+        self.device_table.blockSignals(False)
+        self.device_count.setText(f"{len(self.devices)} 台")
+        self.device_stack.setCurrentIndex(0 if self.devices else 1)
+        self._filter_devices(self.device_search.text())
+
+    def _scrcpy_settings_box(self) -> QGroupBox:
+        settings_box = QGroupBox("Scrcpy 默认参数")
+        form = QFormLayout(settings_box)
+        self.scrcpy_size = QSpinBox(); self.scrcpy_size.setRange(0, 8192); self.scrcpy_size.setValue(int(self.repo.data.get("scrcpy_max_size", 1920)))
+        self.scrcpy_fps = QSpinBox(); self.scrcpy_fps.setRange(0, 240); self.scrcpy_fps.setValue(int(self.repo.data.get("scrcpy_max_fps", 60)))
+        self.scrcpy_bitrate = QLineEdit(str(self.repo.data.get("scrcpy_bitrate", "8M")))
+        self.scrcpy_extra = QLineEdit(str(self.repo.data.get("scrcpy_extra", "")))
+        self.scrcpy_no_audio = QPushButton(); self.scrcpy_no_audio.setCheckable(True)
+        self.scrcpy_no_audio.setChecked(bool(self.repo.data.get("scrcpy_no_audio", False)))
         self.scrcpy_no_audio.toggled.connect(lambda checked: self.scrcpy_no_audio.setText(f"禁用音频：{'是' if checked else '否'}"))
-        form.addRow("最大尺寸", self.scrcpy_size); form.addRow("最大 FPS", self.scrcpy_fps); form.addRow("码率", self.scrcpy_bitrate); form.addRow("附加参数", self.scrcpy_extra); form.addRow(self.scrcpy_no_audio)
-        buttons = QHBoxLayout(); start = QPushButton("启动 Scrcpy"); start.setObjectName("primaryButton"); start.clicked.connect(self.start_scrcpy); stop = QPushButton("停止当前设备"); stop.setObjectName("dangerButton"); stop.clicked.connect(self.stop_scrcpy); buttons.addWidget(start); buttons.addWidget(stop); form.addRow(buttons)
-        log_box = QGroupBox("会话日志"); log_layout = QVBoxLayout(log_box)
-        self.scrcpy_output = QPlainTextEdit(); self.scrcpy_output.setReadOnly(True)
-        log_tools = QHBoxLayout(); log_tools.addStretch(); copy_log = QPushButton("复制日志"); copy_log.clicked.connect(lambda: QApplication.clipboard().setText(self.scrcpy_output.toPlainText())); clear_log = QPushButton("清空"); clear_log.clicked.connect(self.scrcpy_output.clear); log_tools.addWidget(copy_log); log_tools.addWidget(clear_log); log_layout.addLayout(log_tools)
-        log_layout.addWidget(self.scrcpy_output)
-        content.addWidget(settings_box); content.addWidget(log_box, 1); layout.addLayout(content, 1)
-        return page
+        self.scrcpy_no_audio.setText(f"禁用音频：{'是' if self.scrcpy_no_audio.isChecked() else '否'}")
+        form.addRow("最大尺寸", self.scrcpy_size)
+        form.addRow("最大 FPS", self.scrcpy_fps)
+        form.addRow("视频码率", self.scrcpy_bitrate)
+        form.addRow("附加参数", self.scrcpy_extra)
+        form.addRow(self.scrcpy_no_audio)
+        hint = QLabel("设备列表中的“投屏”会直接使用这些参数。0 表示不限制。")
+        hint.setObjectName("pageHint"); form.addRow(hint)
+        return settings_box
 
     def _commands_page(self) -> QWidget:
         page = QWidget(); outer = QVBoxLayout(page); outer.setContentsMargins(20, 18, 20, 18); outer.setSpacing(12)
@@ -333,8 +651,9 @@ class MainWindow(QMainWindow):
         page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(12)
         title = QLabel("设置"); title.setObjectName("pageTitle"); layout.addWidget(title)
         hint = QLabel("配置外部工具路径和运行环境"); hint.setObjectName("pageHint"); layout.addWidget(hint)
-        box = QGroupBox("运行环境"); form = QFormLayout(box); layout.addWidget(box); layout.addStretch()
-        self.theme_combo = QComboBox(); self.theme_combo.addItem("夜间模式", "dark"); self.theme_combo.addItem("日间模式", "light"); self.theme_combo.setCurrentIndex(0 if self.repo.data.get("theme", "dark") == "dark" else 1); self.theme_combo.currentIndexChanged.connect(lambda: self.apply_theme(self.theme_combo.currentData()))
+        content = QHBoxLayout(); content.setSpacing(14); layout.addLayout(content, 1)
+        box = QGroupBox("运行环境"); form = QFormLayout(box); content.addWidget(box, 3)
+        self.theme_combo = QComboBox(); self.theme_combo.addItem("日间模式", "light"); self.theme_combo.addItem("夜间模式", "dark"); self.theme_combo.setCurrentIndex(0 if self.repo.data.get("theme", "light") == "light" else 1); self.theme_combo.currentIndexChanged.connect(lambda: self.apply_theme(self.theme_combo.currentData()))
         form.addRow("界面主题", self.theme_combo)
         self.adb_path = QLineEdit(self.repo.data.get("adb_path", "")); self.scrcpy_path = QLineEdit(self.repo.data.get("scrcpy_path", ""))
         for label, field, key, binary in [("adb 路径", self.adb_path, "adb_path", "adb"), ("scrcpy 路径", self.scrcpy_path, "scrcpy_path", "scrcpy")]:
@@ -351,6 +670,7 @@ class MainWindow(QMainWindow):
         form.addRow("项目地址", project_link)
         form.addRow("软件版本", QLabel(f"v{APP_VERSION}"))
         form.addRow("软件作者", QLabel("luobida"))
+        content.addWidget(self._scrcpy_settings_box(), 2)
         return page
 
     def pick_binary(self, field: QLineEdit) -> None:
@@ -358,7 +678,17 @@ class MainWindow(QMainWindow):
         if path: field.setText(path)
 
     def save_settings(self) -> None:
-        self.repo.data["adb_path"] = self.adb_path.text().strip(); self.repo.data["scrcpy_path"] = self.scrcpy_path.text().strip(); self.repo.data["theme"] = self.theme_combo.currentData(); self.repo.save(); self._notice("设置已保存")
+        self.repo.data.update({
+            "adb_path": self.adb_path.text().strip(),
+            "scrcpy_path": self.scrcpy_path.text().strip(),
+            "theme": self.theme_combo.currentData(),
+            "scrcpy_max_size": self.scrcpy_size.value(),
+            "scrcpy_max_fps": self.scrcpy_fps.value(),
+            "scrcpy_bitrate": self.scrcpy_bitrate.text().strip(),
+            "scrcpy_extra": self.scrcpy_extra.text().strip(),
+            "scrcpy_no_audio": self.scrcpy_no_audio.isChecked(),
+        })
+        self.repo.save(); self._notice("设置已保存")
 
     def apply_theme(self, theme: str) -> None:
         theme = "light" if theme == "light" else "dark"
@@ -368,36 +698,119 @@ class MainWindow(QMainWindow):
             self.repo.save()
         if hasattr(self, "theme_combo"):
             self.theme_combo.blockSignals(True)
-            self.theme_combo.setCurrentIndex(1 if theme == "light" else 0)
+            self.theme_combo.setCurrentIndex(0 if theme == "light" else 1)
             self.theme_combo.blockSignals(False)
         self._update_theme_toggle()
 
+    def apply_terminal_theme(self, theme: str) -> None:
+        """Persist and apply the Shell theme without changing the main UI."""
+        theme = "light" if theme == "light" else "dark"
+        self.repo.data["terminal_theme"] = theme
+        self.repo.save()
+        for terminal in self.terminal_windows.values():
+            terminal.set_theme(theme)
+
     def _toggle_theme(self) -> None:
-        current = self.repo.data.get("theme", "dark")
+        current = self.repo.data.get("theme", "light")
         self.apply_theme("light" if current == "dark" else "dark")
 
     def _update_theme_toggle(self) -> None:
-        """Update the shortcut label to describe the mode it will switch to."""
+        """Show the mode that clicking the theme shortcut will switch to."""
         if not hasattr(self, "theme_toggle"):
             return
-        is_dark = self.repo.data.get("theme", "dark") == "dark"
-        self.theme_toggle.setText("☀ 日间模式" if is_dark else "☾ 夜间模式")
+        is_dark = self.repo.data.get("theme", "light") == "dark"
+        self.theme_toggle.setIcon(interface_icon("sun" if is_dark else "moon"))
+        self.theme_toggle.setToolTip("切换到日间模式" if is_dark else "切换到夜间模式")
+        self.theme_toggle.setAccessibleName(self.theme_toggle.toolTip())
 
     def _run_async(self, fn, on_done, on_failed=None) -> None:
-        thread = QThread(self); job = Job(fn); job.moveToThread(thread); thread.started.connect(job.run); job.done.connect(on_done); job.failed.connect(on_failed or self._show_error); job.done.connect(thread.quit); job.failed.connect(thread.quit); thread.finished.connect(job.deleteLater); thread.finished.connect(thread.deleteLater)
-        self._threads.add(thread)
-        self._jobs.add(job)
-        thread.finished.connect(lambda: self._threads.discard(thread))
-        thread.finished.connect(lambda: self._jobs.discard(job))
+        self._next_job_token += 1
+        token = self._next_job_token
+        self._job_callbacks[token] = (on_done, on_failed or self._show_error)
+
+        def run() -> None:
+            try:
+                result = fn()
+            except Exception as exc:  # Worker boundary: report on the GUI thread.
+                try:
+                    self._async_dispatcher.failed.emit(token, str(exc))
+                except RuntimeError:
+                    pass  # The application closed while the worker was running.
+            else:
+                try:
+                    self._async_dispatcher.done.emit(token, result)
+                except RuntimeError:
+                    pass
+
+        thread = threading.Thread(target=run, name=f"ADBLiteJob-{token}", daemon=True)
+        self._async_threads[token] = thread
         thread.start()
 
-    def refresh_devices(self) -> None:
+    @Slot(int, object)
+    def _handle_job_done(self, token: int, result) -> None:
+        self._async_threads.pop(token, None)
+        callbacks = self._job_callbacks.pop(token, None)
+        if callbacks:
+            callbacks[0](result)
+
+    @Slot(int, str)
+    def _handle_job_failed(self, token: int, message: str) -> None:
+        self._async_threads.pop(token, None)
+        callbacks = self._job_callbacks.pop(token, None)
+        if callbacks:
+            callbacks[1](message)
+
+    def refresh_devices(self, manual: bool = False) -> None:
+        if self._refresh_in_progress:
+            if manual:
+                self._refresh_requested_manually = True
+            return
+        self._refresh_in_progress = True
+        self._refresh_requested_manually = manual
+        if manual:
+            if hasattr(self, "header_refresh_button"):
+                self.header_refresh_button.setEnabled(False)
+                self.header_refresh_button.setToolTip("正在刷新设备…")
+            self.statusBar().showMessage("正在刷新 ADB 设备…")
         self._run_async(self.adb.devices, self._set_devices, self._show_device_error)
 
     def _show_device_error(self, message: str) -> None:
-        self.statusBar().showMessage("ADB 刷新失败")
+        first_result = not self._initial_device_scan_done
+        manual = self._finish_device_refresh()
+        self._initial_device_scan_done = True
+        if manual or first_result:
+            self.statusBar().showMessage(f"ADB 刷新失败 · {message}")
+        if hasattr(self, "device_output") and not self.devices:
+            self.device_output.setPlainText(f"ADB 刷新失败：{message}")
+
+    def _finish_device_refresh(self) -> bool:
+        manual = self._refresh_requested_manually
+        self._refresh_in_progress = False
+        self._refresh_requested_manually = False
+        if hasattr(self, "header_refresh_button"):
+            self.header_refresh_button.setEnabled(True)
+            self.header_refresh_button.setToolTip("刷新设备")
+        return manual
 
     def _set_devices(self, devices: list[Device]) -> None:
+        manual = self._finish_device_refresh()
+        detected_serials = {device.serial for device in devices}
+        # ADB can briefly return its pre-disconnect snapshot. Keep a device
+        # offline until one scan has confirmed that it is actually absent.
+        confirmed_disconnects = self._pending_disconnects - detected_serials
+        self._pending_disconnects.difference_update(confirmed_disconnects)
+        devices = [
+            Device(serial=device.serial, state="offline", model=device.model)
+            if device.serial in self._pending_disconnects else device
+            for device in devices
+        ]
+        devices = merge_device_statuses(self.devices, devices)
+        old_snapshot = [(item.serial, item.state, item.model, item.transport_id) for item in self.devices]
+        new_snapshot = [(item.serial, item.state, item.model, item.transport_id) for item in devices]
+        if self._initial_device_scan_done and old_snapshot == new_snapshot:
+            if manual:
+                self.statusBar().showMessage(f"ADB 已刷新 · {len(devices)} 台设备")
+            return
         old_active = {device.serial for device in self.devices if device.state == "device"}
         new_active = {device.serial for device in devices if device.state == "device"}
         for serial in old_active - new_active:
@@ -405,17 +818,20 @@ class MainWindow(QMainWindow):
             if process and process.poll() is None:
                 self.scrcpy_log.emit(f"[{serial}] ADB 连接已断开，等待 scrcpy 自行退出")
         self.devices = devices; previous = self.current_serial()
-        self.statusBar().showMessage(f"ADB 已刷新 · {len(devices)} 台设备")
-        self.device_combo.blockSignals(True); self.device_combo.clear(); self.device_list.clear()
+        status = "ADB 已刷新" if manual or not self._initial_device_scan_done else "设备列表已更新"
+        self.statusBar().showMessage(f"{status} · {len(devices)} 台设备")
+        self.device_combo.blockSignals(True); self.device_combo.clear()
         for device in devices:
             self.device_combo.addItem(self._device_combo_text(device), device.serial)
-            self.device_list.addItem(f"{device.label} [{device.state}]")
             if not self._initial_device_scan_done and device.state == "device":
                 self.repo.remember(device.serial, kind="wifi" if ":" in device.serial else "usb")
+        if not devices:
+            self.device_combo.addItem("未检测到设备", "")
         if previous:
             idx = self.device_combo.findData(previous)
             if idx >= 0: self.device_combo.setCurrentIndex(idx)
         self.device_combo.blockSignals(False)
+        self._render_device_table()
         if not self._last_selected_serial:
             self._last_selected_serial = self.current_serial()
         self._initial_device_scan_done = True
@@ -434,36 +850,21 @@ class MainWindow(QMainWindow):
     def current_serial(self) -> str:
         return str(self.device_combo.currentData() or "")
 
-    def _select_device_row(self, row: int) -> None:
+    def _select_device_row(self, row: int, *_args) -> None:
         if 0 <= row < len(self.devices):
-            index = self.device_combo.findData(self.devices[row].serial)
-            if index >= 0:
-                self.device_combo.setCurrentIndex(index)
+            self._select_device_serial(self.devices[row].serial)
 
     def _device_changed(self) -> None:
         serial = self.current_serial()
         if serial:
+            if hasattr(self, "device_table"):
+                for row, device in enumerate(self.devices):
+                    if device.serial == serial and self.device_table.currentRow() != row:
+                        self.device_table.blockSignals(True); self.device_table.selectRow(row); self.device_table.blockSignals(False)
+                        break
             self.repo.remember(serial, kind="wifi" if ":" in serial else "usb")
-            if hasattr(self, "shell_target"):
-                previous_serial = self._last_selected_serial
-                self._last_selected_serial = serial
-                if previous_serial and previous_serial != serial:
-                    target_process = self.shell_processes.get(serial)
-                    target_state = target_process.state() if target_process else QProcess.ProcessState.NotRunning
-                    target_note = "已有 Shell 会话" if target_state != QProcess.ProcessState.NotRunning else "尚未进入 Shell"
-                    self._append_shell_log(serial, f"\n切换设备：{previous_serial} → {serial}（{target_note}，其他设备会话保持连接）\n")
-                if self.shell_serial != serial:
-                    self.shell_process = self.shell_processes.get(serial)
-                    self.shell_serial = serial if self.shell_process and self.shell_process.state() != QProcess.ProcessState.NotRunning else ""
-                self._update_shell_prompt(serial)
-                if not self.shell_process or self.shell_process.state() == QProcess.ProcessState.NotRunning:
-                    self.shell_target.setText(f"待连接设备：{serial}")
-                else:
-                    self.shell_target.setText(f"当前设备：{serial}")
-                self._set_shell_log_view(serial)
             self._update_scrcpy_status(serial)
         else:
-            self._set_shell_log_view("")
             self._update_scrcpy_status("")
 
     def _set_shell_log_view(self, serial: str, keep_position: bool = False) -> None:
@@ -533,6 +934,7 @@ class MainWindow(QMainWindow):
     def run_adb(self, args: list[str]) -> None:
         serial = self.current_serial()
         if not serial: return self._show_error("请先选择设备")
+        self._show_device_log()
         self._run_async(lambda: self.adb.run(args, serial), lambda result: self._show_result(self.device_output, result))
 
     def confirm_reboot(self, recovery: bool = False) -> None:
@@ -761,27 +1163,62 @@ class MainWindow(QMainWindow):
             "shell", "sh", "-c",
             "printf '型号: '; getprop ro.product.model; printf '品牌: '; getprop ro.product.brand; printf 'Android: '; getprop ro.build.version.release; printf '分辨率: '; wm size; printf '电量: '; dumpsys battery | grep level",
         ]
+        self._show_device_log()
         self.device_output.setPlainText(f"正在读取设备信息...\n设备：{serial}")
         self._run_async(lambda: self.adb.run(info_args, serial), lambda result: self._show_result(self.device_output, result))
 
     def disconnect_current(self) -> None:
+        if self._connection_busy:
+            self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
+            return
         serial = self.current_serial()
         if not serial:
             return self._show_error("请先选择设备")
+        device = next((item for item in self.devices if item.serial == serial), None)
+        if not device or device.state != "device":
+            self.statusBar().showMessage(f"设备已经离线 · {serial}")
+            return
         if ":" not in serial:
             return self._show_error("这是 USB 设备。请拔出 USB，或在 ADB 设置中停止对应连接；adb disconnect 只适用于无线设备。")
+        self._show_device_log()
         self.device_output.setPlainText(f"正在断开 {serial} ...")
-        try:
-            result = self.adb.run(["disconnect", serial], timeout=20)
+        self._set_connection_busy(True, "断开中…")
+
+        def done(result) -> None:
             self._show_result(self.device_output, result)
             if result.returncode == 0:
-                self.refresh_devices()
-        except Exception as exc:
-            self._show_device_error(str(exc))
+                self._pending_disconnects.add(serial)
+                # Finish the button's signal delivery before replacing its
+                # table cell. Rebuilding it inside the callback can delete a
+                # Qt widget that is still on the event stack.
+                QTimer.singleShot(0, lambda serial=serial: self._finish_disconnect(serial))
+            else:
+                self._set_connection_busy(False)
+
+        self._run_async(lambda: self.adb.run(["disconnect", serial], timeout=20), done, self._finish_connection_error)
+
+    def _finish_disconnect(self, serial: str) -> None:
+        self._mark_device_offline(serial)
+        self._set_connection_busy(False)
+        self.statusBar().showMessage(f"设备已断开 · {serial}")
+
+    def _mark_device_offline(self, serial: str) -> None:
+        for index, device in enumerate(self.devices):
+            if device.serial == serial:
+                self.devices[index] = Device(serial=device.serial, state="offline", model=device.model)
+                self._update_device_marker(serial)
+                break
 
     def connect_history(self) -> None:
-        if self.history_combo.currentIndex() < 0: return
-        address = self.history_combo.currentData()
+        if self._connection_busy:
+            self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
+            return
+        # The visible editor is authoritative. This lets users select an old
+        # address, change it in place, and connect the new address without
+        # overwriting the original history entry.
+        address = self.history_combo.lineEdit().text().strip()
+        if not address:
+            return self._show_error("请输入无线调试地址")
         if ":" not in address:
             idx = self.device_combo.findData(address)
             if idx >= 0:
@@ -790,12 +1227,83 @@ class MainWindow(QMainWindow):
             return self._show_error("这是 USB 序列号。请插入设备后点击刷新；USB 设备不能使用 adb connect。")
         if not self._valid_wireless_address(address):
             return self._show_error("无线地址格式应为 IP:端口，例如 192.168.1.20:5555。端口必须在 1-65535 之间。")
+        self._connect_wireless_address(address)
+
+    def _connect_device_row(self, row: int) -> None:
+        if not 0 <= row < len(self.devices):
+            return
+        device = self.devices[row]
+        if ":" not in device.serial:
+            return
+        self._select_device_serial(device.serial)
+        self._connect_wireless_address(device.serial)
+
+    def _connect_wireless_address(self, address: str) -> None:
+        if self._connection_busy:
+            self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
+            return
+        self._show_device_log()
         self.device_output.setPlainText(f"正在连接 {address} ...\nADB 路径：{self.resolver.resolve('adb') or '未找到'}")
-        try:
-            result = self.adb.run(["connect", address], timeout=20)
+        self._set_connection_busy(True)
+
+        def done(result) -> None:
+            self._set_connection_busy(False)
             self._handle_connect_result(address, result)
-        except Exception as exc:
-            self._show_device_error(str(exc))
+
+        self._run_async(lambda: self.adb.run(["connect", address], timeout=20), done, self._finish_connection_error)
+
+    def _set_connection_busy(self, busy: bool, label: str = "连接中…") -> None:
+        self._connection_busy = busy
+        if hasattr(self, "device_table"):
+            for row, device in enumerate(self.devices):
+                actions = self.device_table.cellWidget(row, 3)
+                if not actions:
+                    continue
+                for button in actions.findChildren(QToolButton):
+                    enabled = device.state == "device"
+                    action_name = button.property("actionName")
+                    if action_name == "disconnect":
+                        enabled = enabled and ":" in device.serial
+                    elif action_name == "connect":
+                        enabled = device.state == "offline" and ":" in device.serial
+                    button.setEnabled(enabled and not busy)
+        if not hasattr(self, "connect_button"):
+            return
+        self.connect_button.setEnabled(not busy)
+        self.discovery_button.setEnabled(not busy)
+        self.history_combo.setEnabled(not busy)
+        self.connect_button.setText(label if busy else "连接设备")
+
+    def _finish_connection_error(self, message: str) -> None:
+        self._set_connection_busy(False)
+        self._show_device_log()
+        self.device_output.setPlainText(f"操作失败：{message}")
+        self.statusBar().showMessage(f"ADB 操作失败 · {message}")
+
+    def discover_wireless(self) -> None:
+        if self._connection_busy:
+            self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
+            return
+        self._set_connection_busy(True, "发现中…")
+        self.statusBar().showMessage("正在通过 ADB mDNS 发现无线设备…")
+
+        def done(addresses: list[str]) -> None:
+            self._set_connection_busy(False)
+            self._show_device_log()
+            if not addresses:
+                self.device_output.setPlainText("未发现可连接的无线调试设备。\n请确认手机与电脑位于同一网络，并已开启无线调试。")
+                self.statusBar().showMessage("自动发现完成 · 未发现设备")
+                return
+            for address in addresses:
+                self.repo.remember(address, kind="wifi")
+            self._reload_history()
+            index = self.history_combo.findData(addresses[0])
+            if index >= 0:
+                self.history_combo.setCurrentIndex(index)
+            self.device_output.setPlainText("已发现无线设备：\n" + "\n".join(f"• {item}" for item in addresses) + "\n\n选择地址后点击“连接设备”。")
+            self.statusBar().showMessage(f"自动发现完成 · {len(addresses)} 个地址")
+
+        self._run_async(self.adb.mdns_services, done, self._finish_connection_error)
 
     def _valid_wireless_address(self, address: str) -> bool:
         parts = str(address).rsplit(":", 1)
@@ -805,7 +1313,7 @@ class MainWindow(QMainWindow):
         if not host or not port_text.isdigit() or not 1 <= int(port_text) <= 65535:
             return False
         try:
-            ipaddress.ip_address(host)
+            ipaddress.ip_address(host.strip("[]"))
             return True
         except ValueError:
             return bool(host.replace("-", "").replace(".", "").isalnum())
@@ -814,65 +1322,56 @@ class MainWindow(QMainWindow):
         self._show_result(self.device_output, result)
         text = f"{result.stdout}\n{result.stderr}".lower()
         if result.returncode == 0 and ("connected to" in text or "already connected" in text):
+            self._pending_disconnects.discard(address)
             self.repo.remember(address, kind="wifi")
             self._reload_history()
             self.refresh_devices()
 
-    def add_history(self) -> None:
-        address, ok = self._input("无线地址", "例如 192.168.1.20:5555")
-        if ok and address.strip(): self.repo.remember(address.strip()); self._reload_history()
-
-    def remove_history(self) -> None:
-        address = self.history_combo.currentData()
+    def remove_history(self, address: str = "") -> None:
+        address = address or str(self.history_combo.currentData() or "")
         if address:
-            online = next((device for device in self.devices if device.serial == address), None)
-            if online and online.state == "device":
-                return self._show_error(f"设备 {address} 当前已连接，不能删除连接历史。请先断开设备后再删除。")
+            current_row = self.history_combo.findData(address)
             self.repo.remove_history(address)
-            self._reload_history()
+            remaining = [item.address for item in self.repo.histories() if item.kind == "wifi" or ":" in item.address]
+            next_address = remaining[min(max(current_row, 0), len(remaining) - 1)] if remaining else ""
+            self._reload_history(next_address)
             self.device_output.setPlainText(f"已删除连接历史：{address}\n设备本身不会被断开。")
+            self.statusBar().showMessage(f"已删除连接记录 · {address}（设备连接不受影响）")
 
-    def copy_history(self) -> None:
-        address = self.history_combo.currentData()
-        if address:
-            QApplication.clipboard().setText(str(address))
-            self.device_output.setPlainText(f"已复制连接地址：{address}")
-
-    def edit_history(self) -> None:
-        old_address = self.history_combo.currentData()
-        if not old_address:
-            return self._show_error("请先选择一条连接历史")
-        online = next((device for device in self.devices if device.serial == old_address), None)
-        if online and online.state == "device":
-            return self._show_error(f"设备 {old_address} 当前已连接，不能编辑地址。请先断开设备后再编辑。")
-        new_address, ok = self._input("编辑连接地址", "例如 192.168.1.20:5555", str(old_address))
-        new_address = new_address.strip()
-        if not ok or new_address == old_address:
+    def _history_selection_changed(self, index: int) -> None:
+        if index < 0:
             return
-        if not self._valid_wireless_address(new_address):
-            return self._show_error("无线地址格式应为 IP:端口，例如 192.168.1.20:5555。端口必须在 1-65535 之间。")
-        if any(item.address == new_address for item in self.repo.histories()):
-            return self._show_error("这个连接地址已经存在于历史记录中。")
-        self.repo.update_history(str(old_address), new_address)
-        self._reload_history()
-        self.history_combo.setCurrentIndex(self.history_combo.findData(new_address))
-        self.device_output.setPlainText(f"已修改连接地址：{old_address} → {new_address}")
+        address = self.history_combo.itemData(index)
+        if address and self.history_combo.lineEdit().text() != str(address):
+            self.history_combo.lineEdit().setText(str(address))
 
-    def _reload_history(self) -> None:
+    def _reload_history(self, selected_address: str | None = None) -> None:
         if not hasattr(self, "history_combo"): return
-        selected_address = self.history_combo.currentData()
+        if selected_address is None:
+            selected_address = self.history_combo.lineEdit().text().strip()
         self.history_combo.blockSignals(True)
         self.history_combo.clear()
-        for item in self.repo.histories(): self.history_combo.addItem(item.label, item.address)
+        for item in self.repo.histories():
+            if item.kind == "wifi" or ":" in item.address:
+                self.history_combo.addItem(item.label, item.address)
         if selected_address:
             selected_index = self.history_combo.findData(selected_address)
             if selected_index >= 0:
                 self.history_combo.setCurrentIndex(selected_index)
+                self.history_combo.lineEdit().setText(str(selected_address))
+            else:
+                self.history_combo.setCurrentIndex(-1)
+                self.history_combo.lineEdit().setText(str(selected_address))
+        elif self.history_combo.count():
+            self.history_combo.setCurrentIndex(0)
+            self.history_combo.lineEdit().setText(str(self.history_combo.itemData(0)))
+        else:
+            self.history_combo.setCurrentIndex(-1)
+            self.history_combo.clearEditText()
         self.history_combo.blockSignals(False)
 
     def _shell_is_running(self, serial: str) -> bool:
-        process = self.shell_processes.get(serial)
-        return bool(process and process.state() != QProcess.ProcessState.NotRunning)
+        return bool(self.terminal_windows.get(serial))
 
     def _device_combo_text(self, device: Device) -> str:
         markers = []
@@ -895,6 +1394,7 @@ class MainWindow(QMainWindow):
         device = next((item for item in self.devices if item.serial == serial), None)
         if index >= 0 and device:
             self.device_combo.setItemText(index, self._device_combo_text(device))
+            self._render_device_table()
 
     def start_scrcpy(self) -> None:
         serial = self.current_serial()
@@ -902,8 +1402,15 @@ class MainWindow(QMainWindow):
         existing = self.scrcpy_processes.get(serial)
         if existing and existing.poll() is None:
             return self._show_error(f"{serial} 已经有一个 scrcpy 窗口在运行")
-        # Persist the field even when the user starts directly without pressing Save.
-        self.repo.data["scrcpy_path"] = self.scrcpy_path.text().strip()
+        # Row actions use the live settings and persist them automatically.
+        self.repo.data.update({
+            "scrcpy_path": self.scrcpy_path.text().strip(),
+            "scrcpy_max_size": self.scrcpy_size.value(),
+            "scrcpy_max_fps": self.scrcpy_fps.value(),
+            "scrcpy_bitrate": self.scrcpy_bitrate.text().strip(),
+            "scrcpy_extra": self.scrcpy_extra.text().strip(),
+            "scrcpy_no_audio": self.scrcpy_no_audio.isChecked(),
+        })
         self.repo.save()
         args = ["--serial", serial]
         if self.scrcpy_size.value(): args += ["--max-size", str(self.scrcpy_size.value())]
@@ -916,6 +1423,7 @@ class MainWindow(QMainWindow):
             self.scrcpy_processes[serial] = ScrcpyHandle(process=process, serial=serial, log_callback=self._emit_scrcpy_log)
             self._update_scrcpy_status(serial)
             self.scrcpy_output.appendPlainText("启动：scrcpy " + " ".join(args))
+            self.statusBar().showMessage(f"Scrcpy 已启动 · {serial}")
         except Exception as exc: self._show_error(str(exc))
 
     def stop_scrcpy(self) -> None:
@@ -927,11 +1435,13 @@ class MainWindow(QMainWindow):
             self.scrcpy_processes.pop(serial, None)
             self._update_scrcpy_status(serial)
             self.scrcpy_output.appendPlainText(f"{serial} 当前没有运行中的 scrcpy")
+            self.statusBar().showMessage(f"{serial} 没有运行中的 Scrcpy")
             return
         process.terminate()
         self.scrcpy_processes.pop(serial, None)
         self._update_scrcpy_status(serial)
         self.scrcpy_output.appendPlainText(f"{serial} 的 scrcpy 已停止")
+        self.statusBar().showMessage(f"Scrcpy 已停止 · {serial}")
 
     def _emit_scrcpy_log(self, serial: str, line: str) -> None:
         self.scrcpy_log.emit(f"[{serial}] {line}")
@@ -950,6 +1460,9 @@ class MainWindow(QMainWindow):
             if process.state() != QProcess.ProcessState.NotRunning:
                 process.terminate()
         self.shell_processes.clear()
+        for terminal in list(self.terminal_windows.values()):
+            terminal.close()
+        self.terminal_windows.clear()
         super().closeEvent(event)
 
     def _discover_scrcpy_processes(self) -> None:
@@ -1026,11 +1539,7 @@ class MainWindow(QMainWindow):
             if direct and not any(operator in cmdline for operator in shell_operators):
                 executable = direct.group(1)
                 argument_text = direct.group(2) or ""
-                arguments = shlex.split(argument_text, posix=False) if argument_text else []
-                arguments = [
-                    item[1:-1] if len(item) >= 2 and item[0] == item[-1] == '"' else item
-                    for item in arguments
-                ]
+                arguments = split_local_process_arguments(argument_text)
                 fn = lambda: self._launch_local_process(executable, arguments)
             else:
                 fn = lambda: ProcessRunner.run("cmd.exe", ["/d", "/s", "/c", cmdline])

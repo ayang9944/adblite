@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import locale
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,10 +12,46 @@ from typing import Iterable
 from .domain import ConnectionHistory, CustomCommand, Device
 
 
+def parse_adb_devices_output(output: str) -> list[Device]:
+    """Parse ``adb devices -l`` output without depending on ADB availability."""
+    devices: list[Device] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 2 or fields[0] in {"*", "List"}:
+            continue
+        attrs = dict(item.split(":", 1) for item in fields[2:] if ":" in item)
+        devices.append(
+            Device(
+                serial=fields[0],
+                state=fields[1],
+                model=attrs.get("model", "").replace("_", " "),
+                transport_id=attrs.get("transport_id", ""),
+            )
+        )
+    return devices
+
+
+def parse_mdns_services_output(output: str) -> list[str]:
+    """Return unique host:port endpoints advertised for wireless ADB."""
+    addresses: list[str] = []
+    for line in output.splitlines():
+        if "_adb-tls-connect._tcp" not in line and "_adb._tcp" not in line:
+            continue
+        match = re.search(r"((?:\[[0-9a-fA-F:]+\]|[^\s:]+):\d{1,5})\s*$", line.strip())
+        if match and match.group(1) not in addresses:
+            addresses.append(match.group(1))
+    return addresses
+
+
 class SettingsRepository:
     def __init__(self) -> None:
         self.path = Path(os.environ.get("APPDATA", Path.home())) / "ADBLite" / "settings.json"
-        self.data: dict = {"adb_path": "", "scrcpy_path": "", "history": [], "commands": [], "shell_history": []}
+        self.data: dict = {
+            "adb_path": "", "scrcpy_path": "", "history": [], "commands": [], "shell_history": [],
+            "theme": "light", "terminal_theme": "light",
+            "scrcpy_max_size": 1920, "scrcpy_max_fps": 60, "scrcpy_bitrate": "8M",
+            "scrcpy_extra": "", "scrcpy_no_audio": False,
+        }
         self.load()
 
     def load(self) -> None:
@@ -159,11 +196,11 @@ class AdbClient:
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or f"adb exited with code {result.returncode}"
             raise RuntimeError(f"adb devices 执行失败：{detail}")
-        devices: list[Device] = []
-        for line in result.stdout.splitlines()[1:]:
-            fields = line.split()
-            if len(fields) < 2 or fields[0] == "*":
-                continue
-            attrs = dict(item.split(":", 1) for item in fields[2:] if ":" in item)
-            devices.append(Device(fields[0], fields[1], attrs.get("model", "").replace("_", " "), attrs.get("transport_id", "")))
-        return devices
+        return parse_adb_devices_output(result.stdout)
+
+    def mdns_services(self) -> list[str]:
+        result = ProcessRunner.run(self.resolver.resolve("adb"), ["mdns", "services"], timeout=15)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or "当前 ADB 不支持 mDNS 发现"
+            raise RuntimeError(detail)
+        return parse_mdns_services_output(result.stdout)

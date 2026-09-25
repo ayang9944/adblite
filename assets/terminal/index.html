@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' qrc:; script-src 'self' qrc: 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+    // Select the Shell theme before the first paint. Waiting for WebChannel
+    // made a dark terminal briefly render the light background on startup.
+    const initialTheme = new URLSearchParams(window.location.search).get('theme') === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = initialTheme;
+  </script>
+  <link rel="stylesheet" href="xterm.css">
+  <style>
+    :root { color-scheme: light; --terminal-background: #ffffff; }
+    :root[data-theme="dark"] { color-scheme: dark; --terminal-background: #0d1117; }
+    html, body, #terminal { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    html, body { background: var(--terminal-background); }
+    #terminal { box-sizing: border-box; padding: 8px 8px 5px; }
+    .xterm, .xterm-screen { height: 100%; }
+    .xterm .xterm-viewport, .xterm .xterm-scrollable-element { background: transparent !important; }
+    .xterm .xterm-scrollable-element .scrollbar.vertical,
+    .xterm .xterm-scrollable-element .scrollbar.vertical .slider { width: 7px !important; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="xterm.js"></script>
+  <script src="addon-fit.js"></script>
+  <script>
+    const themes = {
+      light: {
+        foreground: '#24292f', background: '#ffffff', cursor: '#24292f', cursorAccent: '#ffffff',
+        selectionBackground: '#add6ff', selectionInactiveBackground: '#e2e8f0', black: '#24292f',
+        red: '#cf222e', green: '#116329', yellow: '#4d2d00', blue: '#0969da', magenta: '#8250df',
+        cyan: '#1b7c83', white: '#6e7781', brightBlack: '#4b4b4b', brightRed: '#a40e26',
+        brightGreen: '#1a7f37', brightYellow: '#633c01', brightBlue: '#218bff',
+        brightMagenta: '#a475f9', brightCyan: '#3192aa', brightWhite: '#8c959f'
+      },
+      dark: {
+        foreground: '#c9d1d9', background: '#0d1117', cursor: '#c9d1d9', cursorAccent: '#0d1117',
+        selectionBackground: '#264f78', selectionInactiveBackground: '#161b22', black: '#000000',
+        red: '#f85149', green: '#56d364', yellow: '#f9d442', blue: '#58a6ff', magenta: '#bc8cff',
+        cyan: '#39c5cf', white: '#c9d1d9', brightBlack: '#666666', brightRed: '#ff7b72',
+        brightGreen: '#57d869', brightYellow: '#ffea7f', brightBlue: '#a5d6ff',
+        brightMagenta: '#e2a8ff', brightCyan: '#56f0f3', brightWhite: '#ffffff'
+      }
+    };
+
+    new QWebChannel(qt.webChannelTransport, (channel) => {
+      const bridge = channel.objects.terminalBridge;
+      const terminal = new Terminal({
+        fontFamily: '"Cascadia Mono", "Consolas", "Courier New", monospace',
+        fontSize: 14, lineHeight: 1.4, cursorBlink: true, cursorStyle: 'bar', cursorWidth: 2,
+        convertEol: true, allowTransparency: true, scrollback: 5000, smoothScrollDuration: 150,
+        theme: themes[initialTheme]
+      });
+      window.adbliteTerminal = terminal;
+      const fitAddon = new FitAddon.FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(document.getElementById('terminal'));
+
+      let fitTimer = 0;
+      const fit = () => {
+        clearTimeout(fitTimer);
+        fitTimer = setTimeout(() => {
+          fitAddon.fit();
+          bridge.resizeTerminal(terminal.cols, terminal.rows);
+        }, 16);
+      };
+
+      terminal.onData((data) => bridge.sendInput(data));
+      terminal.onResize(({ cols, rows }) => bridge.resizeTerminal(cols, rows));
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (event.type !== 'keydown') return true;
+        if (event.ctrlKey && event.shiftKey && event.code === 'KeyC') {
+          if (terminal.hasSelection()) bridge.copyText(terminal.getSelection());
+          return false;
+        }
+        if (event.ctrlKey && event.shiftKey && event.code === 'KeyV') {
+          bridge.requestPaste();
+          return false;
+        }
+        return true;
+      });
+
+      bridge.output.connect((data) => terminal.write(data));
+      bridge.themeChanged.connect((name) => {
+        const themeName = name === 'dark' ? 'dark' : 'light';
+        terminal.options.theme = themes[themeName];
+        document.documentElement.dataset.theme = themeName;
+      });
+      bridge.resetRequested.connect(() => terminal.reset());
+      bridge.focusRequested.connect(() => terminal.focus());
+      bridge.pasteRequested.connect((text) => terminal.paste(text));
+
+      new ResizeObserver(fit).observe(document.getElementById('terminal'));
+      fitAddon.fit();
+      bridge.terminalReady(terminal.cols, terminal.rows);
+      terminal.focus();
+    });
+  </script>
+</body>
+</html>
