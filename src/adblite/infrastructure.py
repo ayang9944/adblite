@@ -176,6 +176,44 @@ class ProcessRunner:
         )
 
     @staticmethod
+    def run_cmd(command: str, timeout: int = 120, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+        """Run *command* with the same parsing rules as a Windows cmd prompt.
+
+        ``subprocess`` quotes every item in an argument list according to the
+        C runtime's ``argv`` rules.  ``cmd.exe`` does not use those rules for
+        the text following ``/c``: in particular, the inserted ``\"`` pairs
+        become literal backslashes.  Commands containing normally quoted
+        arguments (URLs, paths, JSON, and so on) therefore reach the target
+        program corrupted.
+
+        Build only cmd.exe's outer invocation here and leave the user's
+        command text untouched.  This also preserves cmd syntax such as
+        pipes, redirections, variable expansion, parentheses and chaining,
+        instead of trying to recognize individual command shapes.
+        """
+        if os.name != "nt":
+            raise OSError("cmd commands are only available on Windows")
+
+        cmd = os.environ.get("COMSPEC", "").strip() or shutil.which("cmd.exe") or "cmd.exe"
+        cmd_prefix = subprocess.list2cmdline([cmd])
+        command_line = f'{cmd_prefix} /d /s /c "{command}"'
+        result = subprocess.run(
+            command_line,
+            executable=cmd,
+            capture_output=True,
+            text=False,
+            timeout=timeout,
+            cwd=cwd,
+            creationflags=ProcessRunner._hidden_window_flags(),
+        )
+        return subprocess.CompletedProcess(
+            result.args,
+            result.returncode,
+            ProcessRunner._decode_output(result.stdout),
+            ProcessRunner._decode_output(result.stderr),
+        )
+
+    @staticmethod
     def start(program: str, args: list[str], cwd: str | None = None) -> subprocess.Popen[str]:
         if not program:
             raise FileNotFoundError("未找到可执行文件，请在设置中配置路径")

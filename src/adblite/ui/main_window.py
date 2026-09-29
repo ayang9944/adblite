@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import codecs
-import ctypes
 import shlex
 import subprocess
 import ipaddress
@@ -28,34 +27,6 @@ from .terminal_window import DeviceTerminalWindow
 
 GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite"
 APP_VERSION = "0.2.0"
-
-
-def split_local_process_arguments(argument_text: str) -> list[str]:
-    """Parse arguments exactly as a native Windows process receives them."""
-    if not argument_text.strip():
-        return []
-    if sys.platform != "win32":
-        return shlex.split(argument_text, posix=False)
-
-    # CommandLineToArgvW treats argv[0] differently from all other arguments,
-    # so prepend a harmless placeholder and discard it after parsing.
-    command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
-    command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
-    command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
-    local_free = ctypes.windll.kernel32.LocalFree
-    local_free.argtypes = [ctypes.c_void_p]
-    local_free.restype = ctypes.c_void_p
-
-    argument_count = ctypes.c_int()
-    argument_values = command_line_to_argv(
-        f"placeholder.exe {argument_text}", ctypes.byref(argument_count),
-    )
-    if not argument_values:
-        raise ctypes.WinError()
-    try:
-        return [argument_values[index] for index in range(1, argument_count.value)]
-    finally:
-        local_free(argument_values)
 
 
 def interface_asset_path(name: str) -> Path:
@@ -1812,35 +1783,8 @@ class MainWindow(QMainWindow):
         elif command.runner == "process": fn = lambda: ProcessRunner.run(command.args[0], command.args[1:])
         else:
             rendered = command.command.replace("${serial}", serial).replace("${adb}", self.resolver.resolve("adb")).replace("${scrcpy}", self.resolver.resolve("scrcpy"))
-            cmdline = rendered.strip()
-            # A quoted executable path (especially one containing spaces) is
-            # best launched directly. Passing it through ``cmd /c`` via a
-            # subprocess argument list escapes the quotes on Windows, causing
-            # cmd.exe to report that the command is not recognized.
-            direct = re.match(r'^\s*"([^"\r\n]+)"(?:\s+(.*))?\s*$', cmdline, re.S)
-            shell_operators = ("&&", "||", "|", ">", "<")
-            if direct and not any(operator in cmdline for operator in shell_operators):
-                executable = direct.group(1)
-                argument_text = direct.group(2) or ""
-                arguments = split_local_process_arguments(argument_text)
-                fn = lambda: self._launch_local_process(executable, arguments)
-            else:
-                fn = lambda: ProcessRunner.run("cmd.exe", ["/d", "/s", "/c", cmdline])
+            fn = lambda: ProcessRunner.run_cmd(rendered)
         self._run_async(fn, lambda result: self._show_result(self.command_output, result))
-
-    @staticmethod
-    def _launch_local_process(executable: str, arguments: list[str]) -> subprocess.CompletedProcess:
-        """Start a local GUI process without waiting for it to exit."""
-        flags = ProcessRunner._hidden_window_flags() | getattr(subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen(
-            [executable, *arguments],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=flags,
-            close_fds=True,
-        )
-        return subprocess.CompletedProcess([executable, *arguments], 0, "", "")
 
     def _show_result(self, target: QPlainTextEdit, result) -> None:
         target.appendPlainText(f"退出码：{result.returncode}\n{result.stdout}{result.stderr}".strip())
