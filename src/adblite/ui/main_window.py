@@ -14,7 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QProcess, QRect, QSize, QTimer, Signal, Slot, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QAbstractButton, QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QSpinBox, QStackedWidget, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget,
@@ -58,37 +58,61 @@ def split_local_process_arguments(argument_text: str) -> list[str]:
         local_free(argument_values)
 
 
-def interface_icon(name: str) -> QIcon:
+def interface_asset_path(name: str) -> Path:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
-    return QIcon(str(base / "assets" / "icons" / f"{name}.svg"))
+    return base / "assets" / "icons" / f"{name}.svg"
+
+
+def interface_icon(name: str) -> QIcon:
+    return QIcon(str(interface_asset_path(name)))
 
 DARK_STYLE = """
 * { font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; }
 QMainWindow, QWidget { background: #111827; color: #E5E7EB; }
-#topbar { background: #151D2B; border-bottom: 1px solid #273449; }
+/* Text should sit on its parent surface instead of creating a separate
+   rectangular fill behind every label.  Badges opt back into a background
+   through their more specific object-name rules below. */
+QLabel { background: transparent; }
+#topbar { background: #151D2B; border: none; }
 #brandName { color: #F8FAFC; font-size: 17px; font-weight: 700; padding-right: 12px; }
 #navTabs { background: transparent; border: none; }
-#navTabs::tab { background: transparent; color: #94A3B8; border: none; padding: 17px 14px 14px; }
+#navTabs::tab { background: transparent; color: #94A3B8; border: none; border-radius: 6px; padding: 9px 14px; margin: 7px 2px; min-width: 64px; font-size: 14px; font-weight: normal; }
 #navTabs::tab:hover { color: #E2E8F0; background: #1C2738; }
-#navTabs::tab:selected { color: #2DD4BF; font-weight: 600; border-bottom: 2px solid #14B8A6; }
-#pageTitle { color: #F8FAFC; font-size: 20px; font-weight: 700; }
+#navTabs::tab:selected { color: #5EEAD4; background: #183B3A; font-weight: normal; border: none; }
 #pageHint, #mutedLabel { color: #94A3B8; font-size: 12px; }
-#countBadge { background: #183B3A; color: #5EEAD4; border-radius: 10px; padding: 2px 8px; font-weight: 600; }
+#connectionLabel { color: #E5E7EB; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; font-weight: normal; }
 #primaryButton { background: #0F8F83; border-color: #14B8A6; color: white; font-weight: 600; }
 #primaryButton:hover { background: #0D9488; }
 #dangerButton { color: #FDA4AF; }
-#statusLabel { background: #172033; border: 1px solid #2B3950; border-radius: 6px; padding: 7px 10px; color: #93C5FD; }
-#onlineBadge { background: transparent; color: #6EE7B7; padding: 3px 9px; font-weight: 600; }
-#warningBadge { background: transparent; color: #FCD34D; padding: 3px 9px; font-weight: 600; }
-#offlineBadge { background: transparent; color: #94A3B8; padding: 3px 9px; font-weight: 600; }
-#connectionBar { background: #151F2E; border: 1px solid #2B3950; border-radius: 9px; }
-#emptyPanel { background: #141D2B; border: 1px solid #2B3950; border-radius: 9px; }
+#statusLabel { background: #172033; border: none; border-radius: 6px; padding: 7px 10px; color: #93C5FD; }
+#onlineBadge { background: transparent; color: #6EE7B7; padding: 3px 0; font-weight: 600; }
+#warningBadge { background: transparent; color: #FCD34D; padding: 3px 0; font-weight: 600; }
+#offlineBadge { background: transparent; color: #94A3B8; padding: 3px 0; font-weight: 600; }
+#devicesPage, #contentPage { background: #0F1724; }
+#deviceSurface { background: transparent; }
+#devicePanel, #operationPanel { background: #151F2E; border: none; border-radius: 9px; }
+#connectionBar { background: #151F2E; border: none; border-radius: 9px; }
+#emptyPanel { background: transparent; border: none; }
+#operationLog { background: transparent; border: none; border-radius: 0; padding: 10px; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; }
+#operationHeader { background: transparent; }
+#logToggle { background: transparent; border: none; padding: 6px 10px; color: #94A3B8; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; font-weight: 600; }
+#logToggle:hover { background: #1C2A3D; }
+#sectionTitle { background: transparent; color: #94A3B8; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; font-weight: 600; padding: 0; }
 #emptyTitle { color: #E2E8F0; font-size: 16px; font-weight: 600; }
 #terminalHeader { background: #151D2B; border-bottom: 1px solid #273449; }
 #terminalDevice { background: #183B3A; color: #5EEAD4; border: 1px solid #245B57; border-radius: 5px; padding: 4px 9px; }
 #terminalSurface { background: #0B1220; color: #DCE7F5; border: none; border-radius: 0; padding: 10px; selection-background-color: #0F766E; font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; }
 QComboBox, QLineEdit, QSpinBox, QPlainTextEdit, QListWidget { background: #182235; border: 1px solid #334155; border-radius: 6px; padding: 7px; color: #E5E7EB; }
-QComboBox { min-height: 22px; }
+QComboBox { min-height: 22px; padding-right: 38px; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; }
+QComboBox QLineEdit { background: transparent; border: none; padding: 0; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; }
+QComboBox QAbstractItemView { font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; }
+QComboBox QAbstractItemView::item { min-height: 34px; padding: 0 8px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 32px; background: #223046; border: none; border-left: 1px solid #334155; border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+QComboBox::drop-down:hover { background: #2C405B; }
+QSpinBox { padding-right: 34px; }
+QSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 28px; background: #223046; border: none; border-left: 1px solid #334155; border-bottom: 1px solid #334155; border-top-right-radius: 6px; }
+QSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 28px; background: #223046; border: none; border-left: 1px solid #334155; border-bottom-right-radius: 6px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #2C405B; }
 QComboBox:hover, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus { border-color: #14B8A6; }
 QPushButton, QToolButton { background: #223046; border: 1px solid #3B4A61; border-radius: 6px; padding: 7px 12px; color: #E5E7EB; }
 QPushButton:hover, QToolButton:hover { background: #2C405B; border-color: #2DD4BF; }
@@ -98,26 +122,37 @@ QPushButton:disabled, QToolButton:disabled { color: #64748B; background: #1A2434
 #rowAction::menu-indicator { image: none; width: 0; }
 #shellPrompt { color: #5EEAD4; font-family: Consolas, "Cascadia Mono", monospace; font-size: 15px; font-weight: 700; min-width: 16px; }
 #projectLink { color: #2DD4BF; }
-QGroupBox { border: 1px solid #2B3950; border-radius: 8px; margin-top: 12px; padding: 14px 10px 10px; font-weight: 600; color: #CBD5E1; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; background: #111827; }
+QGroupBox { background: #151F2E; border: none; border-radius: 8px; margin-top: 0; padding: 0; color: #CBD5E1; }
 QListWidget::item { padding: 9px 8px; border-radius: 5px; }
-QListWidget::item:selected { background: #0F766E; color: white; }
-#deviceTable { background: #121B29; border: 1px solid #2B3950; border-radius: 8px; gridline-color: #263449; selection-background-color: transparent; selection-color: #5EEAD4; }
-#deviceTable::item { background: transparent; padding: 8px; border-bottom: 1px solid #263449; }
-#deviceTable::item:selected { background: transparent; color: #E5E7EB; }
+#commandList { outline: none; }
+#commandList::item:selected { background: #1C2738; color: #E5E7EB; border: none; outline: none; }
+#deviceTable { background: transparent; border: none; border-radius: 0; gridline-color: transparent; selection-background-color: #1C2738; selection-color: #E5E7EB; }
+#deviceTable::item { background: transparent; padding: 10px; border: none; }
+#deviceTable::item:selected { background: #1C2738; color: #E5E7EB; }
 #deviceIdentifierCell, #deviceStatusCell, #deviceActionsCell { background: transparent; }
 #deviceIdentifierCell QLabel { background: transparent; }
-QHeaderView::section { background: #172131; color: #94A3B8; border: none; border-bottom: 1px solid #2B3950; padding: 9px; font-weight: 600; }
-QSplitter::handle { background: #334155; height: 5px; }
+QHeaderView::section { background: transparent; color: #94A3B8; border: none; padding: 10px; font-weight: 600; }
+QSplitter::handle { background: transparent; height: 7px; }
+#deviceSplitter { background: transparent; border: none; }
+#deviceSplitter::handle { background: #0F1724; height: 8px; }
+#deviceSplitter::handle:hover { background: #183B3A; }
 QScrollBar:vertical { background: transparent; width: 10px; }
 QScrollBar::handle:vertical { background: #475569; border-radius: 5px; min-height: 25px; }
+QScrollBar::handle:vertical:hover { background: #64748B; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { background: transparent; border: none; height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QPlainTextEdit { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
-QStatusBar { background: #0F172A; color: #94A3B8; border-top: 1px solid #273449; }
+QStatusBar { background: #0F172A; color: #94A3B8; border: none; }
+"""
+DARK_STYLE += f"""
+QComboBox::down-arrow {{ image: url("{interface_asset_path('chevron-down').as_posix()}"); width: 12px; height: 8px; }}
+QSpinBox::up-arrow {{ image: url("{interface_asset_path('chevron-up').as_posix()}"); width: 10px; height: 7px; }}
+QSpinBox::down-arrow {{ image: url("{interface_asset_path('chevron-down').as_posix()}"); width: 10px; height: 7px; }}
 """
 
 LIGHT_STYLE = DARK_STYLE
 for _dark, _light in (
-    ("#111827", "#F5F7FA"), ("#151D2B", "#FFFFFF"), ("#273449", "#E5E7EB"),
+    ("#111827", "#FFFFFF"), ("#151D2B", "#FFFFFF"), ("#273449", "#D8E0E8"),
     ("#F8FAFC", "#1F2937"), ("#94A3B8", "#6B7280"), ("#E2E8F0", "#374151"),
     ("#1C2738", "#F0FDFA"), ("#172033", "#F0FDFA"), ("#2B3950", "#E5E7EB"),
     ("#151F2E", "#FFFFFF"), ("#141D2B", "#FFFFFF"), ("#182235", "#FFFFFF"),
@@ -131,18 +166,47 @@ QMainWindow, QWidget { color: #1F2937; }
 QComboBox, QLineEdit, QSpinBox, QPlainTextEdit, QListWidget { color: #1F2937; }
 QPushButton, QToolButton { color: #374151; }
 QPushButton:disabled, QToolButton:disabled { color: #9CA3AF; }
-#countBadge { background: #CCFBF1; color: #0F766E; }
 #onlineBadge { background: transparent; color: #15803D; }
 #warningBadge { background: transparent; color: #B45309; }
 #offlineBadge { background: transparent; color: #64748B; }
+#connectionLabel { color: #374151; }
 #iconButton, #rowAction { color: #0F8F83; }
 #iconButton:hover, #rowAction:hover { background: #F0FDFA; border-color: #99F6E4; }
-#deviceTable { color: #1F2937; selection-background-color: transparent; selection-color: #0F766E; }
+#deviceTable { color: #1F2937; selection-background-color: #F1F3F5; selection-color: #1F2937; }
 #deviceTable::item { background: transparent; color: #1F2937; }
-#deviceTable::item:selected { background: transparent; color: #1F2937; }
+#deviceTable::item:selected { background: #F1F3F5; color: #1F2937; }
 #deviceIdentifierCell, #deviceStatusCell, #deviceActionsCell { background: transparent; }
-QGroupBox::title { background: #F5F7FA; }
-#terminalHeader { background: #FFFFFF; border-bottom-color: #E5E7EB; }
+/* Use spacing and quiet surface changes for structure.  Section outlines and
+   row separators make the device page unnecessarily busy. */
+#devicesPage, #contentPage { background: #F4F6F8; }
+#topbar { background: #FFFFFF; border: none; }
+#navTabs::tab:selected { color: #0F8F83; background: #E9F8F5; border: none; font-weight: normal; }
+#devicePanel, #operationPanel, #connectionBar, QGroupBox {
+    background: #FFFFFF;
+    border: none;
+}
+#emptyPanel, #deviceTable, #operationLog { background: transparent; border: none; }
+#logToggle { background: transparent; border: none; color: #6B7280; }
+#logToggle:hover { background: #F0FDFA; }
+#sectionTitle { color: #6B7280; }
+QComboBox, QLineEdit, QSpinBox, QPlainTextEdit, QListWidget {
+    background: #FFFFFF;
+    border-color: #C9D4E0;
+}
+QComboBox::drop-down { background: #F8FAFC; border-left-color: #C9D4E0; }
+QComboBox::drop-down:hover { background: #F0FDFA; }
+QSpinBox::up-button, QSpinBox::down-button { background: #F8FAFC; border-left-color: #C9D4E0; }
+QSpinBox::up-button { border-bottom-color: #C9D4E0; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #F0FDFA; }
+QPushButton, QToolButton { background: #FFFFFF; border-color: #C9D4E0; }
+QHeaderView::section { background: transparent; border: none; }
+#deviceSplitter::handle { background: #F4F6F8; }
+#deviceSplitter::handle:hover { background: #DDF4EF; }
+QScrollBar::handle:vertical { background: #94A3B8; }
+QScrollBar::handle:vertical:hover { background: #64748B; }
+#commandList::item:selected { background: #F1F3F5; color: #1F2937; border: none; outline: none; }
+QStatusBar { background: #F4F6F8; border: none; }
+#terminalHeader { background: #FFFFFF; border-bottom-color: #D8E0E8; }
 #terminalDevice { background: #F0FDFA; color: #0F8F83; border-color: #CCFBF1; }
 #terminalSurface { background: #FCFCFD; color: #111827; selection-background-color: #99F6E4; }
 """
@@ -306,6 +370,7 @@ class MainWindow(QMainWindow):
         self._last_selected_serial = ""
         self._refresh_in_progress = False
         self._refresh_requested_manually = False
+        self._adb_restart_in_progress = False
         self._connection_busy = False
         self._pending_disconnects: set[str] = set()
         self._async_dispatcher = AsyncDispatcher(self)
@@ -333,8 +398,17 @@ class MainWindow(QMainWindow):
         brand = QLabel("ADBLite"); brand.setObjectName("brandName"); header.addWidget(brand)
         self.navigation = QTabBar(); self.navigation.setObjectName("navTabs")
         self.navigation.setDrawBase(False)
-        for item in ("设备", "快捷命令", "设置"):
-            self.navigation.addTab(item)
+        self.navigation.setExpanding(False)
+        self.navigation.setUsesScrollButtons(False)
+        self.navigation.setElideMode(Qt.TextElideMode.ElideNone)
+        navigation_items = (
+            ("设备", "查看和管理已连接的 USB/无线 ADB 设备"),
+            ("快捷命令", "保存并运行常用 ADB、Scrcpy、CMD 和进程命令"),
+            ("设置", "配置外部工具路径、界面主题和运行参数"),
+        )
+        for item, tooltip in navigation_items:
+            index = self.navigation.addTab(item)
+            self.navigation.setTabToolTip(index, tooltip)
         header.addWidget(self.navigation)
         header.addStretch()
         # The table is the single visible device selector. Keep this hidden
@@ -342,8 +416,17 @@ class MainWindow(QMainWindow):
         self.device_combo = QComboBox(self)
         self.device_combo.currentIndexChanged.connect(self._device_changed)
         self.device_combo.hide()
+        self.device_search = QLineEdit(); self.device_search.setObjectName("headerSearch")
+        self.device_search.setPlaceholderText("搜索设备名称或标识")
+        self.device_search.setClearButtonEnabled(True); self.device_search.setFixedWidth(240)
+        self.device_search.textChanged.connect(self._filter_devices); self.device_search.hide()
+        header.addWidget(self.device_search)
+        self.header_search_button = self._icon_button(
+            "search", "搜索设备名称或标识", self._toggle_device_search, "iconButton",
+        )
+        header.addWidget(self.header_search_button)
         self.header_refresh_button = self._icon_button(
-            "refresh", "刷新设备", lambda: self.refresh_devices(manual=True), "iconButton",
+            "refresh", "刷新当前已连接的 USB/无线 ADB 设备列表", lambda: self.refresh_devices(manual=True), "iconButton",
         )
         header.addWidget(self.header_refresh_button)
         self.theme_toggle = self._icon_button("moon", "切换到夜间模式", self._toggle_theme, "iconButton")
@@ -354,24 +437,41 @@ class MainWindow(QMainWindow):
         self.scrcpy_output = QPlainTextEdit(self); self.scrcpy_output.hide()
         self.page_stack = QStackedWidget()
         self.page_stack.addWidget(self._devices_page()); self.page_stack.addWidget(self._commands_page()); self.page_stack.addWidget(self._settings_page())
-        self.navigation.currentChanged.connect(self.page_stack.setCurrentIndex)
+        self.navigation.currentChanged.connect(self._switch_page)
         self.navigation.setCurrentIndex(0)
+        self._switch_page(0)
         layout.addWidget(self.page_stack, 1)
+        for button in root.findChildren(QAbstractButton):
+            self._configure_button_focus(button)
         self.setCentralWidget(root)
+        self.statusBar().setSizeGripEnabled(False)
         self.statusBar().showMessage("ADB 就绪 · 等待设备刷新")
 
-    def _devices_page(self) -> QWidget:
-        page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(18, 16, 18, 12); layout.setSpacing(10)
-        toolbar = QHBoxLayout(); toolbar.setSpacing(8)
-        title = QLabel("设备"); title.setObjectName("pageTitle"); toolbar.addWidget(title)
-        self.device_count = QLabel("0 台"); self.device_count.setObjectName("countBadge"); toolbar.addWidget(self.device_count)
-        toolbar.addStretch()
-        self.device_search = QLineEdit(); self.device_search.setPlaceholderText("搜索设备名称或标识")
-        self.device_search.setClearButtonEnabled(True); self.device_search.setMaximumWidth(260)
-        self.device_search.textChanged.connect(self._filter_devices); toolbar.addWidget(self.device_search)
-        layout.addLayout(toolbar)
+    def _switch_page(self, index: int) -> None:
+        self.page_stack.setCurrentIndex(index)
+        on_devices_page = index == 0
+        self.header_search_button.setVisible(on_devices_page)
+        if not on_devices_page:
+            self.device_search.clear()
+            self.device_search.hide()
 
-        self.device_stack = QStackedWidget()
+    def _toggle_device_search(self) -> None:
+        if self.device_search.isVisible():
+            self.device_search.clear()
+            self.device_search.hide()
+            return
+        self.device_search.show()
+        self.device_search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.device_search.selectAll()
+
+    def _devices_page(self) -> QWidget:
+        page = QWidget(); page.setObjectName("devicesPage")
+        layout = QVBoxLayout(page); layout.setContentsMargins(10, 10, 10, 8); layout.setSpacing(8)
+
+        device_panel = QFrame(); device_panel.setObjectName("devicePanel")
+        device_layout = QVBoxLayout(device_panel); device_layout.setContentsMargins(10, 10, 10, 10); device_layout.setSpacing(0)
+
+        self.device_stack = QStackedWidget(); self.device_stack.setObjectName("deviceSurface")
         self.device_table = QTableWidget(0, 4); self.device_table.setObjectName("deviceTable")
         self.device_table.setHorizontalHeaderLabels(["设备标识", "设备名称", "状态", "操作"])
         self.device_table.verticalHeader().setVisible(False)
@@ -381,6 +481,8 @@ class MainWindow(QMainWindow):
         self.device_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.device_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         device_header = self.device_table.horizontalHeader()
+        device_header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        device_header.setFixedHeight(44)
         device_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         device_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         device_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
@@ -396,26 +498,44 @@ class MainWindow(QMainWindow):
         self.device_stack.addWidget(self.device_table)
         empty = QFrame(); empty.setObjectName("emptyPanel")
         empty_layout = QVBoxLayout(empty); empty_layout.addStretch()
-        empty_icon = QLabel("⌁"); empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter); empty_icon.setStyleSheet("font-size: 34px; color: #14B8A6;")
+        empty_icon = QLabel(); empty_icon.setFixedSize(48, 48)
+        empty_icon.setPixmap(interface_icon("monitor").pixmap(40, 40))
+        empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_icon.setToolTip("暂未发现 ADB 设备")
         empty_title = QLabel("还没有发现设备"); empty_title.setObjectName("emptyTitle"); empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_hint = QLabel("连接 USB 设备，或在下方输入无线调试地址"); empty_hint.setObjectName("mutedLabel"); empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_layout.addWidget(empty_icon); empty_layout.addWidget(empty_title); empty_layout.addWidget(empty_hint); empty_layout.addStretch()
+        empty_layout.addWidget(empty_icon, 0, Qt.AlignmentFlag.AlignHCenter); empty_layout.addWidget(empty_title); empty_layout.addWidget(empty_hint); empty_layout.addStretch()
         self.device_stack.addWidget(empty)
         self.device_stack.setCurrentIndex(1)
-        layout.addWidget(self.device_stack, 1)
+        device_layout.addWidget(self.device_stack, 1)
 
-        self.device_output = QPlainTextEdit(); self.device_output.setReadOnly(True); self.device_output.setMaximumHeight(125); self.device_output.hide()
-        log_header = QHBoxLayout(); self.log_toggle = QToolButton(); self.log_toggle.setText("操作记录  ▾")
+        self.device_output = QPlainTextEdit(); self.device_output.setObjectName("operationLog"); self.device_output.setReadOnly(True); self.device_output.setMinimumHeight(80); self.device_output.hide()
+        self.operation_panel = QFrame(); self.operation_panel.setObjectName("operationPanel")
+        operation_layout = QVBoxLayout(self.operation_panel); operation_layout.setContentsMargins(8, 5, 8, 7); operation_layout.setSpacing(2)
+        operation_header = QWidget(); operation_header.setObjectName("operationHeader"); operation_header.setFixedHeight(34)
+        log_header = QHBoxLayout(operation_header); log_header.setContentsMargins(0, 0, 0, 0)
+        self.log_toggle = QToolButton(); self.log_toggle.setObjectName("logToggle"); self.log_toggle.setText("操作记录  ▾")
         self.log_toggle.setCheckable(True); self.log_toggle.toggled.connect(self._toggle_device_log); log_header.addWidget(self.log_toggle)
         log_header.addStretch()
-        copy_log = QToolButton(); copy_log.setText("复制"); copy_log.clicked.connect(lambda: QApplication.clipboard().setText(self.device_output.toPlainText())); log_header.addWidget(copy_log)
-        clear_log = QToolButton(); clear_log.setText("清空"); clear_log.clicked.connect(self.device_output.clear); log_header.addWidget(clear_log)
-        layout.addLayout(log_header)
-        layout.addWidget(self.device_output)
+        operation_layout.addWidget(operation_header, 0, Qt.AlignmentFlag.AlignTop)
+        operation_layout.addWidget(self.device_output, 1)
+
+        self.device_splitter = QSplitter(Qt.Orientation.Vertical); self.device_splitter.setObjectName("deviceSplitter")
+        self.device_splitter.setChildrenCollapsible(False)
+        self.device_splitter.setHandleWidth(8)
+        self.device_splitter.addWidget(device_panel); self.device_splitter.addWidget(self.operation_panel)
+        self.device_splitter.setStretchFactor(0, 1); self.device_splitter.setStretchFactor(1, 0)
+        self.device_splitter.setSizes([600, 42])
+        layout.addWidget(self.device_splitter, 1)
 
         connection_bar = QFrame(); connection_bar.setObjectName("connectionBar")
         history_layout = QHBoxLayout(connection_bar); history_layout.setContentsMargins(12, 9, 10, 9); history_layout.setSpacing(8)
-        connection_label = QLabel("⌁  无线连接"); connection_label.setObjectName("mutedLabel"); history_layout.addWidget(connection_label)
+        connection_icon = QLabel(); connection_icon.setFixedSize(20, 20)
+        connection_icon.setPixmap(interface_icon("wifi").pixmap(18, 18))
+        connection_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        connection_icon.setToolTip("无线连接")
+        history_layout.addWidget(connection_icon)
+        connection_label = QLabel("无线连接"); connection_label.setObjectName("connectionLabel"); history_layout.addWidget(connection_label)
         self.history_combo = HistoryComboBox()
         self.history_combo.setMinimumWidth(260)
         self.history_combo.lineEdit().setPlaceholderText("IP:端口，例如 192.168.1.20:5555")
@@ -423,14 +543,40 @@ class MainWindow(QMainWindow):
         self.history_combo.removeRequested.connect(self.remove_history)
         self.history_combo.lineEdit().returnPressed.connect(self.connect_history); history_layout.addWidget(self.history_combo, 1)
         self.connect_button = QPushButton("连接设备"); self.connect_button.setObjectName("primaryButton"); self.connect_button.clicked.connect(self.connect_history); history_layout.addWidget(self.connect_button)
-        self.discovery_button = QPushButton("自动发现"); self.discovery_button.clicked.connect(self.discover_wireless); history_layout.addWidget(self.discovery_button)
+        self.connect_all_button = QPushButton("连接全部")
+        self.connect_all_button.setToolTip("一键连接全部无线历史地址")
+        self.connect_all_button.clicked.connect(self.connect_all_history); history_layout.addWidget(self.connect_all_button)
+        self.discovery_button = QPushButton("自动发现")
+        self.discovery_button.setToolTip("通过 ADB mDNS 发现同一网络中开启无线调试的设备（仅发现地址，不会自动连接）")
+        self.discovery_button.clicked.connect(self.discover_wireless); history_layout.addWidget(self.discovery_button)
+        self.restart_adb_button = QPushButton("重启 ADB")
+        self.restart_adb_button.setToolTip("重启 ADB 服务（adb kill-server → adb start-server）")
+        self.restart_adb_button.clicked.connect(self.restart_adb_server); history_layout.addWidget(self.restart_adb_button)
         layout.addWidget(connection_bar)
         self._reload_history()
         return page
 
     def _toggle_device_log(self, visible: bool) -> None:
+        sizes = self.device_splitter.sizes()
+        if not visible and len(sizes) == 2 and sizes[1] > 80:
+            self._operation_log_height = sizes[1]
         self.device_output.setVisible(visible)
         self.log_toggle.setText("操作记录  ▴" if visible else "操作记录  ▾")
+        QTimer.singleShot(0, lambda expanded=visible: self._resize_operation_panel(expanded))
+
+    def _resize_operation_panel(self, expanded: bool) -> None:
+        sizes = self.device_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        total = sum(sizes)
+        if total <= 0:
+            return
+        if expanded:
+            target = int(getattr(self, "_operation_log_height", 180))
+            target = max(130, min(target, max(130, total - 160)))
+        else:
+            target = self.log_toggle.sizeHint().height() + 12
+        self.device_splitter.setSizes([max(1, total - target), target])
 
     def _show_device_log(self) -> None:
         if not self.log_toggle.isChecked():
@@ -455,8 +601,18 @@ class MainWindow(QMainWindow):
     def _run_device_action(self, row: int, action) -> None:
         if not 0 <= row < len(self.devices):
             return
+        self.device_table.selectRow(row)
         self._select_device_serial(self.devices[row].serial)
         action()
+
+    @staticmethod
+    def _configure_button_focus(button: QAbstractButton) -> None:
+        """Keep keyboard focus support without retaining focus after a click."""
+        if button.property("transientClickFocus"):
+            return
+        button.setProperty("transientClickFocus", True)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        button.clicked.connect(lambda _checked=False, target=button: target.clearFocus())
 
     @staticmethod
     def _icon_button(icon_name: str, tooltip: str, callback=None, object_name: str = "rowAction") -> QToolButton:
@@ -472,6 +628,7 @@ class MainWindow(QMainWindow):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         if callback:
             button.clicked.connect(callback)
+        MainWindow._configure_button_focus(button)
         return button
 
     def _open_device_shell(self, row: int) -> None:
@@ -519,6 +676,10 @@ class MainWindow(QMainWindow):
         self.device_table.setRowCount(len(self.devices))
         for row, device in enumerate(self.devices):
             connection = "无线" if ":" in device.serial else "USB"
+            # Cell widgets are transparent so the row selection painted by
+            # these backing items remains continuous across the whole row.
+            for column in (0, 2, 3):
+                self.device_table.setItem(row, column, QTableWidgetItem())
             identifier_wrap = QWidget(); identifier_wrap.setObjectName("deviceIdentifierCell")
             identifier_wrap.setToolTip(f"{connection} 设备 · {device.serial}")
             identifier_wrap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -526,14 +687,12 @@ class MainWindow(QMainWindow):
             connection_icon = QLabel(); connection_icon.setFixedSize(18, 18)
             connection_icon.setPixmap(interface_icon("wifi" if connection == "无线" else "usb").pixmap(18, 18))
             connection_icon.setToolTip(f"{connection} 设备")
-            identifier_text = QLabel(device.serial); identifier_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            identifier_text = QLabel(device.serial); identifier_text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             identifier_text.setToolTip(f"{connection} 设备 · {device.serial}")
-            identifier_spacer = QLabel(); identifier_spacer.setFixedSize(18, 18)
-            identifier_layout.addWidget(connection_icon)
             identifier_layout.addStretch()
             identifier_layout.addWidget(identifier_text)
+            identifier_layout.addWidget(connection_icon)
             identifier_layout.addStretch()
-            identifier_layout.addWidget(identifier_spacer)
 
             name_item = QTableWidgetItem(device.model or "未知设备")
             name_item.setToolTip(device.model or "ADB 未返回设备型号")
@@ -541,13 +700,14 @@ class MainWindow(QMainWindow):
             self.device_table.setCellWidget(row, 0, identifier_wrap); self.device_table.setItem(row, 1, name_item)
 
             status_text, status_style = self._device_status(device)
-            status_wrap = QWidget(); status_wrap.setObjectName("deviceStatusCell"); status_layout = QHBoxLayout(status_wrap); status_layout.setContentsMargins(6, 0, 8, 0)
+            status_wrap = QWidget(); status_wrap.setObjectName("deviceStatusCell"); status_wrap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            status_layout = QHBoxLayout(status_wrap); status_layout.setContentsMargins(10, 0, 10, 0)
             status = QLabel(status_text); status.setObjectName(status_style); status.setAlignment(Qt.AlignmentFlag.AlignCenter)
             status_layout.addStretch(); status_layout.addWidget(status); status_layout.addStretch()
             self.device_table.setCellWidget(row, 2, status_wrap)
 
             actions = QWidget(); actions.setObjectName("deviceActionsCell"); actions.setMinimumWidth(244)
-            action_layout = QHBoxLayout(actions); action_layout.setContentsMargins(8, 0, 4, 0); action_layout.setSpacing(6)
+            action_layout = QHBoxLayout(actions); action_layout.setContentsMargins(10, 0, 10, 0); action_layout.setSpacing(6)
             enabled = device.state == "device" and not self._connection_busy
             action_layout.addStretch()
             action_specs = [
@@ -568,17 +728,23 @@ class MainWindow(QMainWindow):
                 button.setEnabled(action_enabled); action_layout.addWidget(button)
             action_layout.addStretch()
             self.device_table.setCellWidget(row, 3, actions)
-            self.device_table.setRowHeight(row, 52)
+            self.device_table.setRowHeight(row, 56)
             if device.serial == selected:
                 self.device_table.selectRow(row)
         self.device_table.blockSignals(False)
-        self.device_count.setText(f"{len(self.devices)} 台")
         self.device_stack.setCurrentIndex(0 if self.devices else 1)
         self._filter_devices(self.device_search.text())
 
+    @staticmethod
+    def _section_title(text: str) -> QLabel:
+        title = QLabel(text)
+        title.setObjectName("sectionTitle")
+        return title
+
     def _scrcpy_settings_box(self) -> QGroupBox:
-        settings_box = QGroupBox("Scrcpy 默认参数")
+        settings_box = QGroupBox()
         form = QFormLayout(settings_box)
+        form.addRow(self._section_title("Scrcpy 默认参数"))
         self.scrcpy_size = QSpinBox(); self.scrcpy_size.setRange(0, 8192); self.scrcpy_size.setValue(int(self.repo.data.get("scrcpy_max_size", 1920)))
         self.scrcpy_fps = QSpinBox(); self.scrcpy_fps.setRange(0, 240); self.scrcpy_fps.setValue(int(self.repo.data.get("scrcpy_max_fps", 60)))
         self.scrcpy_bitrate = QLineEdit(str(self.repo.data.get("scrcpy_bitrate", "8M")))
@@ -597,13 +763,15 @@ class MainWindow(QMainWindow):
         return settings_box
 
     def _commands_page(self) -> QWidget:
-        page = QWidget(); outer = QVBoxLayout(page); outer.setContentsMargins(20, 18, 20, 18); outer.setSpacing(12)
-        title = QLabel("快捷命令"); title.setObjectName("pageTitle"); outer.addWidget(title)
-        hint = QLabel("保存常用 ADB、Scrcpy、CMD 和进程命令"); hint.setObjectName("pageHint"); outer.addWidget(hint)
+        page = QWidget(); page.setObjectName("contentPage"); outer = QVBoxLayout(page); outer.setContentsMargins(14, 14, 14, 14); outer.setSpacing(12)
         layout = QHBoxLayout(); layout.setSpacing(14); outer.addLayout(layout, 1)
-        list_box = QGroupBox("命令列表"); list_layout = QVBoxLayout(list_box); self.command_list = QListWidget(); list_layout.addWidget(self.command_list); layout.addWidget(list_box, 1)
+        list_box = QGroupBox(); list_layout = QVBoxLayout(list_box); list_layout.setContentsMargins(12, 10, 12, 12); list_layout.setSpacing(10)
+        list_layout.addWidget(self._section_title("命令列表"))
+        self.command_list = QListWidget(); self.command_list.setObjectName("commandList"); self.command_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        list_layout.addWidget(self.command_list); layout.addWidget(list_box, 1)
 
-        panel = QGroupBox("命令编辑器"); panel_layout = QVBoxLayout(panel); panel_layout.setContentsMargins(10, 14, 10, 10); layout.addWidget(panel, 2)
+        panel = QGroupBox(); panel_layout = QVBoxLayout(panel); panel_layout.setContentsMargins(12, 10, 12, 12); panel_layout.setSpacing(10); layout.addWidget(panel, 2)
+        panel_layout.addWidget(self._section_title("命令编辑器"))
         editor_area = QWidget(); editor = QFormLayout(editor_area); editor.setContentsMargins(0, 0, 0, 0); editor.setHorizontalSpacing(10); editor.setVerticalSpacing(8); editor.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.cmd_name = QLineEdit(); self.cmd_runner = QComboBox(); self.cmd_runner.addItems(["adb", "scrcpy", "cmd", "process"]); self.cmd_args = QPlainTextEdit(); self.cmd_args.setPlaceholderText("每行一个参数；cmd 模式填写完整命令"); self.cmd_args.setMinimumHeight(110)
         args_label = QLabel("参数/命令"); args_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
@@ -627,7 +795,6 @@ class MainWindow(QMainWindow):
 
     def _shell_page(self) -> QWidget:
         page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(12)
-        title = QLabel("设备 Shell"); title.setObjectName("pageTitle"); layout.addWidget(title)
         hint = QLabel("连接当前设备的持久 ADB Shell 会话（稳定日志模式，避免长命令回显错乱）"); hint.setObjectName("pageHint"); layout.addWidget(hint)
         shell_notice = QLabel("提示：Shell 功能尚不完善，推荐优先使用设备原生终端功能。")
         shell_notice.setObjectName("pageHint")
@@ -648,11 +815,9 @@ class MainWindow(QMainWindow):
         return page
 
     def _settings_page(self) -> QWidget:
-        page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(12)
-        title = QLabel("设置"); title.setObjectName("pageTitle"); layout.addWidget(title)
-        hint = QLabel("配置外部工具路径和运行环境"); hint.setObjectName("pageHint"); layout.addWidget(hint)
+        page = QWidget(); page.setObjectName("contentPage"); layout = QVBoxLayout(page); layout.setContentsMargins(14, 14, 14, 14); layout.setSpacing(12)
         content = QHBoxLayout(); content.setSpacing(14); layout.addLayout(content, 1)
-        box = QGroupBox("运行环境"); form = QFormLayout(box); content.addWidget(box, 3)
+        box = QGroupBox(); form = QFormLayout(box); form.addRow(self._section_title("运行环境")); content.addWidget(box, 3)
         self.theme_combo = QComboBox(); self.theme_combo.addItem("日间模式", "light"); self.theme_combo.addItem("夜间模式", "dark"); self.theme_combo.setCurrentIndex(0 if self.repo.data.get("theme", "light") == "light" else 1); self.theme_combo.currentIndexChanged.connect(lambda: self.apply_theme(self.theme_combo.currentData()))
         form.addRow("界面主题", self.theme_combo)
         self.adb_path = QLineEdit(self.repo.data.get("adb_path", "")); self.scrcpy_path = QLineEdit(self.repo.data.get("scrcpy_path", ""))
@@ -760,7 +925,66 @@ class MainWindow(QMainWindow):
         if callbacks:
             callbacks[1](message)
 
+    def restart_adb_server(self) -> None:
+        if self._adb_restart_in_progress:
+            return
+        if self._connection_busy:
+            self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
+            return
+        if self._refresh_in_progress:
+            self.statusBar().showMessage("设备列表正在刷新，请稍后重试…")
+            return
+
+        self._adb_restart_in_progress = True
+        self.restart_adb_button.setEnabled(False)
+        self.restart_adb_button.setText("重启中…")
+        self.restart_adb_button.setToolTip("正在重启 ADB 服务…")
+        self.connect_button.setEnabled(False)
+        self.connect_all_button.setEnabled(False)
+        self.discovery_button.setEnabled(False)
+        self.history_combo.setEnabled(False)
+        self.header_refresh_button.setEnabled(False)
+        self.statusBar().showMessage("正在重启 ADB 服务…")
+
+        def restart():
+            kill_result = self.adb.run(["kill-server"], timeout=20)
+            if kill_result.returncode != 0:
+                detail = (kill_result.stderr or kill_result.stdout).strip() or f"退出码 {kill_result.returncode}"
+                raise RuntimeError(f"adb kill-server 失败：{detail}")
+            start_result = self.adb.run(["start-server"], timeout=20)
+            if start_result.returncode != 0:
+                detail = (start_result.stderr or start_result.stdout).strip() or f"退出码 {start_result.returncode}"
+                raise RuntimeError(f"adb start-server 失败：{detail}")
+            return start_result
+
+        self._run_async(restart, self._finish_adb_restart, self._finish_adb_restart_error)
+
+    def _reset_adb_restart_ui(self) -> None:
+        self._adb_restart_in_progress = False
+        self.restart_adb_button.setEnabled(True)
+        self.restart_adb_button.setText("重启 ADB")
+        self.restart_adb_button.setToolTip("重启 ADB 服务（adb kill-server → adb start-server）")
+        self.connect_button.setEnabled(True)
+        self.connect_all_button.setEnabled(True)
+        self.discovery_button.setEnabled(True)
+        self.history_combo.setEnabled(True)
+        self.header_refresh_button.setEnabled(True)
+
+    def _finish_adb_restart(self, _result) -> None:
+        self._reset_adb_restart_ui()
+        self.statusBar().showMessage("ADB 服务已重启，正在刷新设备列表…")
+        self.refresh_devices(manual=True)
+
+    def _finish_adb_restart_error(self, message: str) -> None:
+        self._reset_adb_restart_ui()
+        self.statusBar().showMessage(f"ADB 服务重启失败 · {message}")
+        self._show_error(f"重启 ADB 服务失败：\n{message}")
+
     def refresh_devices(self, manual: bool = False) -> None:
+        if self._adb_restart_in_progress:
+            if manual:
+                self.statusBar().showMessage("ADB 服务正在重启，请稍候…")
+            return
         if self._refresh_in_progress:
             if manual:
                 self._refresh_requested_manually = True
@@ -789,7 +1013,7 @@ class MainWindow(QMainWindow):
         self._refresh_requested_manually = False
         if hasattr(self, "header_refresh_button"):
             self.header_refresh_button.setEnabled(True)
-            self.header_refresh_button.setToolTip("刷新设备")
+            self.header_refresh_button.setToolTip("刷新当前已连接的 USB/无线 ADB 设备列表")
         return manual
 
     def _set_devices(self, devices: list[Device]) -> None:
@@ -1160,7 +1384,11 @@ class MainWindow(QMainWindow):
         if not serial:
             return self._show_error("请先选择设备")
         info_args = [
-            "shell", "sh", "-c",
+            # ``adb shell`` already runs the command through the device shell.
+            # Adding ``sh -c`` here loses the first printf argument when ADB
+            # reconstructs the remote command line (``printf`` becomes the
+            # script and the label becomes $0).
+            "shell",
             "printf '型号: '; getprop ro.product.model; printf '品牌: '; getprop ro.product.brand; printf 'Android: '; getprop ro.build.version.release; printf '分辨率: '; wm size; printf '电量: '; dumpsys battery | grep level",
         ]
         self._show_device_log()
@@ -1209,6 +1437,54 @@ class MainWindow(QMainWindow):
                 self._update_device_marker(serial)
                 break
 
+    def connect_all_history(self) -> None:
+        if self._connection_busy or self._adb_restart_in_progress:
+            self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
+            return
+
+        addresses: list[str] = []
+        for item in self.repo.histories():
+            address = item.address.strip()
+            if address and (item.kind == "wifi" or ":" in address) and self._valid_wireless_address(address) and address not in addresses:
+                addresses.append(address)
+        if not addresses:
+            return self._show_error("连接历史中没有可用的无线调试地址")
+
+        self._show_device_log()
+        self.device_output.setPlainText("正在连接全部无线历史地址…\n" + "\n".join(f"• {address}" for address in addresses))
+        self._set_connection_busy(True, "连接中…", self.connect_all_button)
+        self.statusBar().showMessage(f"正在连接 {len(addresses)} 个无线历史地址…")
+
+        def connect_all():
+            results = []
+            for address in addresses:
+                try:
+                    result = self.adb.run(["connect", address], timeout=20)
+                    results.append((address, result, ""))
+                except Exception as exc:
+                    results.append((address, None, str(exc)))
+            return results
+
+        def done(results) -> None:
+            self._set_connection_busy(False)
+            success_count = 0
+            lines = ["全部历史地址连接结果："]
+            for address, result, error in results:
+                output = error if result is None else f"{result.stdout}\n{result.stderr}".strip()
+                normalized = output.lower()
+                succeeded = result is not None and result.returncode == 0 and ("connected to" in normalized or "already connected" in normalized)
+                if succeeded:
+                    success_count += 1
+                    self._pending_disconnects.discard(address)
+                lines.append(f"\n[{'成功' if succeeded else '失败'}] {address}")
+                if output:
+                    lines.append(output)
+            self.device_output.setPlainText("\n".join(lines))
+            self.statusBar().showMessage(f"全部连接完成 · 成功 {success_count}/{len(results)}")
+            self.refresh_devices(manual=True)
+
+        self._run_async(connect_all, done, self._finish_connection_error)
+
     def connect_history(self) -> None:
         if self._connection_busy:
             self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
@@ -1235,6 +1511,7 @@ class MainWindow(QMainWindow):
         device = self.devices[row]
         if ":" not in device.serial:
             return
+        self.device_table.selectRow(row)
         self._select_device_serial(device.serial)
         self._connect_wireless_address(device.serial)
 
@@ -1252,7 +1529,7 @@ class MainWindow(QMainWindow):
 
         self._run_async(lambda: self.adb.run(["connect", address], timeout=20), done, self._finish_connection_error)
 
-    def _set_connection_busy(self, busy: bool, label: str = "连接中…") -> None:
+    def _set_connection_busy(self, busy: bool, label: str = "连接中…", active_button: QPushButton | None = None) -> None:
         self._connection_busy = busy
         if hasattr(self, "device_table"):
             for row, device in enumerate(self.devices):
@@ -1270,9 +1547,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "connect_button"):
             return
         self.connect_button.setEnabled(not busy)
+        self.connect_all_button.setEnabled(not busy)
         self.discovery_button.setEnabled(not busy)
+        self.restart_adb_button.setEnabled(not busy and not self._adb_restart_in_progress)
         self.history_combo.setEnabled(not busy)
-        self.connect_button.setText(label if busy else "连接设备")
+        self.connect_button.setText("连接设备")
+        self.connect_all_button.setText("连接全部")
+        self.discovery_button.setText("自动发现")
+        if busy:
+            (active_button or self.connect_button).setText(label)
 
     def _finish_connection_error(self, message: str) -> None:
         self._set_connection_busy(False)
@@ -1284,7 +1567,7 @@ class MainWindow(QMainWindow):
         if self._connection_busy:
             self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
             return
-        self._set_connection_busy(True, "发现中…")
+        self._set_connection_busy(True, "发现中…", self.discovery_button)
         self.statusBar().showMessage("正在通过 ADB mDNS 发现无线设备…")
 
         def done(addresses: list[str]) -> None:

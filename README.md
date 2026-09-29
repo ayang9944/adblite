@@ -4,6 +4,23 @@ ADBLite 是一个面向个人使用的 Windows 桌面工具，用于集中管理
 
 当前版本：`v0.2.0`
 
+## 界面风格说明
+
+ADBLite 的界面布局与交互风格参考了 [Escrcpy](https://github.com/viarotel-org/escrcpy)，并针对本项目的 ADB 设备管理、无线连接、操作记录和 Windows 桌面使用场景进行了简化与调整。界面使用卡片化内容区、低对比度背景和紧凑操作区，尽量减少不必要的分隔线与重复标题。
+
+## 当前开发版更新
+
+- 重新整理设备、快捷命令和设置页面，页面进入后直接展示主要内容，页面说明改为顶部导航标签的悬浮提示。
+- 优化日间/夜间主题，减少大面积灰色文字底色和冗余边框，改用留白与内容块区分界面。
+- 优化设备表格：表头、设备信息、状态和操作按钮统一居中，选中行使用浅色背景。
+- 操作记录改为独立内容区，可通过分割条拖动调整高度，并统一字体、滚动条和焦点样式。
+- 新增顶部设备搜索按钮，需要时展开搜索框，避免占用设备列表空间。
+- 统一下拉框、数值调整按钮、页面副标题和各类操作按钮的尺寸、图标、颜色与焦点反馈。
+- 新增“连接全部”：按顺序对全部有效无线历史地址执行 `adb connect <address>`，单个地址失败不会中断后续连接。
+- 新增“重启 ADB”：依次执行 `adb kill-server` 和 `adb start-server`，成功后自动刷新设备列表。
+- 修复读取设备信息时 `printf: Needs 1 argument` 的命令组装问题。
+- 保留无线设备自动发现、历史地址删除、独立终端、scrcpy 投屏、重启系统和 Recovery 等已有功能。
+
 ## v0.2.0 更新内容
 
 - 全新设备管理界面：使用表格展示设备标识、名称、连接状态和快捷操作，并支持设备搜索。
@@ -95,6 +112,40 @@ $env:PYTHONPATH = "src"
 ```
 
 构建结果位于 `dist/` 目录。发布前请在未安装 Python 的 Windows 环境中验证设备扫描、无线连接、终端和 scrcpy 功能。
+
+## 同步到 GitHub
+
+项目默认分支为 `main`。提交前先查看变更并运行测试：
+
+```powershell
+git status
+git diff
+$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -v
+```
+
+将本地修改同步到 GitHub：
+
+```powershell
+git add -A
+git commit -m "feat: update UI and ADB device actions"
+git pull --rebase origin main
+git push origin main
+```
+
+只同步 GitHub 上的最新代码到本地：
+
+```powershell
+git pull --rebase origin main
+```
+
+首次关联远程仓库时可使用：
+
+```powershell
+git remote add origin https://github.com/ayang9944/adblite.git
+git branch -M main
+git push -u origin main
+```
 
 ## 项目地址
 
