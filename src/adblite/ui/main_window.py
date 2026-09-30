@@ -916,6 +916,12 @@ class MainWindow(QMainWindow):
         self.history_combo.setEnabled(False)
         self.header_refresh_button.setEnabled(False)
         self.statusBar().showMessage("正在重启 ADB 服务…")
+        self._show_device_log()
+        self.device_output.setPlainText(
+            "正在重启 ADB 服务…\n\n"
+            "[1/2] adb kill-server\n"
+            "[2/2] adb start-server"
+        )
 
         def restart():
             kill_result = self.adb.run(["kill-server"], timeout=20)
@@ -926,7 +932,7 @@ class MainWindow(QMainWindow):
             if start_result.returncode != 0:
                 detail = (start_result.stderr or start_result.stdout).strip() or f"退出码 {start_result.returncode}"
                 raise RuntimeError(f"adb start-server 失败：{detail}")
-            return start_result
+            return kill_result, start_result
 
         self._run_async(restart, self._finish_adb_restart, self._finish_adb_restart_error)
 
@@ -941,13 +947,25 @@ class MainWindow(QMainWindow):
         self.history_combo.setEnabled(True)
         self.header_refresh_button.setEnabled(True)
 
-    def _finish_adb_restart(self, _result) -> None:
+    def _finish_adb_restart(self, results) -> None:
         self._reset_adb_restart_ui()
+        kill_result, start_result = results
+        lines = ["ADB 服务重启成功。"]
+        for index, (command, result) in enumerate(
+            (("adb kill-server", kill_result), ("adb start-server", start_result)),
+            start=1,
+        ):
+            lines.extend(["", f"[{index}/2] {command}", f"退出码：{result.returncode}"])
+            output = f"{result.stdout}{result.stderr}".strip()
+            if output:
+                lines.append(output)
+        self.device_output.setPlainText("\n".join(lines))
         self.statusBar().showMessage("ADB 服务已重启，正在刷新设备列表…")
         self.refresh_devices(manual=True)
 
     def _finish_adb_restart_error(self, message: str) -> None:
         self._reset_adb_restart_ui()
+        self.device_output.appendPlainText(f"\n\nADB 服务重启失败：{message}")
         self.statusBar().showMessage(f"ADB 服务重启失败 · {message}")
         self._show_error(f"重启 ADB 服务失败：\n{message}")
 
@@ -1004,7 +1022,7 @@ class MainWindow(QMainWindow):
         new_snapshot = [(item.serial, item.state, item.model, item.transport_id) for item in devices]
         if self._initial_device_scan_done and old_snapshot == new_snapshot:
             if manual:
-                self.statusBar().showMessage(f"ADB 已刷新 · {len(devices)} 台设备")
+                self.statusBar().showMessage(f"设备列表已刷新 · {len(devices)} 台设备")
             return
         old_active = {device.serial for device in self.devices if device.state == "device"}
         new_active = {device.serial for device in devices if device.state == "device"}
@@ -1013,8 +1031,7 @@ class MainWindow(QMainWindow):
             if process and process.poll() is None:
                 self.scrcpy_log.emit(f"[{serial}] ADB 连接已断开，等待 scrcpy 自行退出")
         self.devices = devices; previous = self.current_serial()
-        status = "ADB 已刷新" if manual or not self._initial_device_scan_done else "设备列表已更新"
-        self.statusBar().showMessage(f"{status} · {len(devices)} 台设备")
+        self.statusBar().showMessage(f"设备列表已刷新 · {len(devices)} 台设备")
         self.device_combo.blockSignals(True); self.device_combo.clear()
         for device in devices:
             self.device_combo.addItem(self._device_combo_text(device), device.serial)
