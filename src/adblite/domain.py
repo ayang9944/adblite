@@ -4,6 +4,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 
+DEVICE_STATE_ORDER = {
+    "device": 0,
+    "unauthorized": 1,
+    "recovery": 2,
+    "bootloader": 2,
+    "sideload": 2,
+    "unknown": 3,
+    "offline": 4,
+}
+
+
 @dataclass
 class Device:
     serial: str
@@ -16,6 +27,16 @@ class Device:
         if self.model:
             return f"{self.model} · {self.serial}"
         return self.serial
+
+
+def sort_devices_by_status(devices: list[Device]) -> list[Device]:
+    """Return devices ordered from connected to offline.
+
+    ``sorted`` is stable, so devices with the same state retain the order in
+    which ADB reported them.  Unknown future states stay between recognized
+    transient states and offline entries instead of jumping to the top.
+    """
+    return sorted(devices, key=lambda device: DEVICE_STATE_ORDER.get(device.state, 3))
 
 
 def merge_device_statuses(known: list[Device], detected: list[Device]) -> list[Device]:

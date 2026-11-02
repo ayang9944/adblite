@@ -1,6 +1,6 @@
 import unittest
 
-from adblite.domain import Device, merge_device_statuses
+from adblite.domain import Device, merge_device_statuses, sort_devices_by_status
 
 
 class DeviceStatusMergeTests(unittest.TestCase):
@@ -26,6 +26,21 @@ class DeviceStatusMergeTests(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].state, "device")
         self.assertEqual(merged[0].model, "Current Name")
+
+    def test_devices_are_sorted_connected_first_and_offline_last(self):
+        devices = [
+            Device(serial="offline", state="offline"),
+            Device(serial="unauthorized", state="unauthorized"),
+            Device(serial="connected-2", state="device"),
+            Device(serial="connected-1", state="device"),
+        ]
+
+        ordered = sort_devices_by_status(devices)
+
+        self.assertEqual(
+            [device.serial for device in ordered],
+            ["connected-2", "connected-1", "unauthorized", "offline"],
+        )
 
 
 if __name__ == "__main__":

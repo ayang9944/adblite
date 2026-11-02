@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
-from ..domain import ConnectionHistory, CustomCommand, Device, merge_device_statuses
+from ..domain import ConnectionHistory, CustomCommand, Device, merge_device_statuses, sort_devices_by_status
 from ..infrastructure import AdbClient, BinaryResolver, ProcessRunner, SettingsRepository
 from ..terminal import TerminalLogState, flush_terminal_log, render_terminal_log
 from .terminal_window import DeviceTerminalWindow
@@ -50,7 +50,7 @@ QLabel { background: transparent; }
 #navTabs::tab { background: transparent; color: #94A3B8; border: none; border-radius: 6px; padding: 9px 14px; margin: 7px 2px; min-width: 64px; font-size: 14px; font-weight: normal; }
 #navTabs::tab:hover { color: #E2E8F0; background: #1C2738; }
 #navTabs::tab:selected { color: #5EEAD4; background: #183B3A; font-weight: normal; border: none; }
-#pageHint, #mutedLabel { color: #94A3B8; font-size: 12px; }
+#pageHint, #mutedLabel, #emptyHint { color: #94A3B8; font-size: 12px; }
 #connectionLabel { color: #E5E7EB; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; font-weight: normal; }
 #primaryButton { background: #0F8F83; border-color: #14B8A6; color: white; font-weight: 600; }
 #primaryButton:hover { background: #0D9488; }
@@ -60,7 +60,7 @@ QLabel { background: transparent; }
 #warningBadge { background: transparent; color: #FCD34D; padding: 3px 0; font-weight: 600; }
 #offlineBadge { background: transparent; color: #94A3B8; padding: 3px 0; font-weight: 600; }
 #devicesPage, #contentPage { background: #0F1724; }
-#deviceSurface { background: transparent; }
+#deviceSurface, #emptyPanel, #emptyPanel QLabel { background: transparent; border: none; }
 #devicePanel, #operationPanel { background: #151F2E; border: none; border-radius: 9px; }
 #connectionBar { background: #151F2E; border: none; border-radius: 9px; }
 #emptyPanel { background: transparent; border: none; }
@@ -157,9 +157,11 @@ QPushButton:disabled, QToolButton:disabled { color: #9CA3AF; }
     border: none;
 }
 #emptyPanel, #deviceTable, #operationLog { background: transparent; border: none; }
+#emptyIcon, #emptyTitle, #emptyHint { background: transparent; border: none; }
 #logToggle { background: transparent; border: none; color: #6B7280; }
 #logToggle:hover { background: #F0FDFA; }
 #sectionTitle { color: #6B7280; }
+#emptyHint { color: #6B7280; }
 QComboBox, QLineEdit, QSpinBox, QPlainTextEdit, QListWidget {
     background: #FFFFFF;
     border-color: #C9D4E0;
@@ -344,6 +346,10 @@ class MainWindow(QMainWindow):
         self._adb_restart_in_progress = False
         self._connection_busy = False
         self._pending_disconnects: set[str] = set()
+        # Offline devices removed by the user stay hidden while ADB continues
+        # to report the stale offline row.  A later live/non-offline state
+        # automatically makes the device visible again.
+        self._dismissed_devices: set[str] = set()
         self._async_dispatcher = AsyncDispatcher(self)
         self._async_dispatcher.done.connect(self._handle_job_done)
         self._async_dispatcher.failed.connect(self._handle_job_failed)
@@ -439,10 +445,10 @@ class MainWindow(QMainWindow):
         page = QWidget(); page.setObjectName("devicesPage")
         layout = QVBoxLayout(page); layout.setContentsMargins(10, 10, 10, 8); layout.setSpacing(8)
 
-        device_panel = QFrame(); device_panel.setObjectName("devicePanel")
+        device_panel = QFrame(); device_panel.setObjectName("devicePanel"); device_panel.setFrameShape(QFrame.Shape.NoFrame)
         device_layout = QVBoxLayout(device_panel); device_layout.setContentsMargins(10, 10, 10, 10); device_layout.setSpacing(0)
 
-        self.device_stack = QStackedWidget(); self.device_stack.setObjectName("deviceSurface")
+        self.device_stack = QStackedWidget(); self.device_stack.setObjectName("deviceSurface"); self.device_stack.setFrameShape(QFrame.Shape.NoFrame)
         self.device_table = QTableWidget(0, 4); self.device_table.setObjectName("deviceTable")
         self.device_table.setHorizontalHeaderLabels(["设备标识", "设备名称", "状态", "操作"])
         self.device_table.verticalHeader().setVisible(False)
@@ -467,14 +473,14 @@ class MainWindow(QMainWindow):
         self.device_table.itemSelectionChanged.connect(self._device_table_selection_changed)
         self.device_table.cellDoubleClicked.connect(lambda row, _column: self._run_device_action(row, self.start_scrcpy))
         self.device_stack.addWidget(self.device_table)
-        empty = QFrame(); empty.setObjectName("emptyPanel")
+        empty = QFrame(); empty.setObjectName("emptyPanel"); empty.setFrameShape(QFrame.Shape.NoFrame)
         empty_layout = QVBoxLayout(empty); empty_layout.addStretch()
-        empty_icon = QLabel(); empty_icon.setFixedSize(48, 48)
+        empty_icon = QLabel(); empty_icon.setObjectName("emptyIcon"); empty_icon.setFixedSize(48, 48)
         empty_icon.setPixmap(interface_icon("monitor").pixmap(40, 40))
         empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_icon.setToolTip("暂未发现 ADB 设备")
         empty_title = QLabel("还没有发现设备"); empty_title.setObjectName("emptyTitle"); empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_hint = QLabel("连接 USB 设备，或在下方输入无线调试地址"); empty_hint.setObjectName("mutedLabel"); empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_hint = QLabel("连接 USB 设备，或在下方输入无线调试地址"); empty_hint.setObjectName("emptyHint"); empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.addWidget(empty_icon, 0, Qt.AlignmentFlag.AlignHCenter); empty_layout.addWidget(empty_title); empty_layout.addWidget(empty_hint); empty_layout.addStretch()
         self.device_stack.addWidget(empty)
         self.device_stack.setCurrentIndex(1)
@@ -677,8 +683,14 @@ class MainWindow(QMainWindow):
             status_layout.addStretch(); status_layout.addWidget(status); status_layout.addStretch()
             self.device_table.setCellWidget(row, 2, status_wrap)
 
-            actions = QWidget(); actions.setObjectName("deviceActionsCell"); actions.setMinimumWidth(244)
+            actions = QWidget(); actions.setObjectName("deviceActionsCell"); actions.setMinimumWidth(280)
             action_layout = QHBoxLayout(actions); action_layout.setContentsMargins(10, 0, 10, 0); action_layout.setSpacing(6)
+            # Device actions require an ADB-ready target, but the wireless
+            # connection action is intentionally independent of the reported
+            # device state.  ``adb devices`` commonly reports ``unauthorized``
+            # or ``offline`` while the TCP endpoint is still available and
+            # ``adb disconnect``/``adb connect`` are exactly what can recover
+            # those states.
             enabled = device.state == "device" and not self._connection_busy
             action_layout.addStretch()
             action_specs = [
@@ -688,8 +700,12 @@ class MainWindow(QMainWindow):
             ]
             if ":" in device.serial and device.state == "offline":
                 action_specs.append(("connect", "重新连接无线 ADB", lambda _=False, r=row: self._connect_device_row(r), not self._connection_busy))
+            elif ":" in device.serial:
+                action_specs.append(("disconnect", "断开无线 ADB", lambda _=False, r=row: self._run_device_action(r, self.disconnect_current), not self._connection_busy))
             else:
-                action_specs.append(("disconnect", "断开无线 ADB", lambda _=False, r=row: self._run_device_action(r, self.disconnect_current), enabled and ":" in device.serial))
+                action_specs.append(("disconnect", "断开无线 ADB", lambda _=False, r=row: self._run_device_action(r, self.disconnect_current), False))
+            if device.state == "offline":
+                action_specs.append(("delete", "从设备列表和连接历史中删除", lambda _=False, r=row: self._run_device_action(r, self.remove_offline_device), not self._connection_busy))
             action_specs.extend((
                 ("restart", "重启系统", lambda _=False, r=row: self._run_device_action(r, lambda: self.confirm_reboot(False)), enabled),
                 ("recovery", "重启到 Recovery", lambda _=False, r=row: self._run_device_action(r, lambda: self.confirm_reboot(True)), enabled),
@@ -1007,6 +1023,13 @@ class MainWindow(QMainWindow):
 
     def _set_devices(self, devices: list[Device]) -> None:
         manual = self._finish_device_refresh()
+        for device in devices:
+            if device.serial in self._dismissed_devices and device.state != "offline":
+                self._dismissed_devices.discard(device.serial)
+        devices = [
+            device for device in devices
+            if device.serial not in self._dismissed_devices
+        ]
         detected_serials = {device.serial for device in devices}
         # ADB can briefly return its pre-disconnect snapshot. Keep a device
         # offline until one scan has confirmed that it is actually absent.
@@ -1017,7 +1040,7 @@ class MainWindow(QMainWindow):
             if device.serial in self._pending_disconnects else device
             for device in devices
         ]
-        devices = merge_device_statuses(self.devices, devices)
+        devices = sort_devices_by_status(merge_device_statuses(self.devices, devices))
         old_snapshot = [(item.serial, item.state, item.model, item.transport_id) for item in self.devices]
         new_snapshot = [(item.serial, item.state, item.model, item.transport_id) for item in devices]
         if self._initial_device_scan_done and old_snapshot == new_snapshot:
@@ -1032,17 +1055,11 @@ class MainWindow(QMainWindow):
                 self.scrcpy_log.emit(f"[{serial}] ADB 连接已断开，等待 scrcpy 自行退出")
         self.devices = devices; previous = self.current_serial()
         self.statusBar().showMessage(f"设备列表已刷新 · {len(devices)} 台设备")
-        self.device_combo.blockSignals(True); self.device_combo.clear()
-        for device in devices:
-            self.device_combo.addItem(self._device_combo_text(device), device.serial)
-            if not self._initial_device_scan_done and device.state == "device":
-                self.repo.remember(device.serial, kind="wifi" if ":" in device.serial else "usb")
-        if not devices:
-            self.device_combo.addItem("未检测到设备", "")
-        if previous:
-            idx = self.device_combo.findData(previous)
-            if idx >= 0: self.device_combo.setCurrentIndex(idx)
-        self.device_combo.blockSignals(False)
+        self._rebuild_device_combo(previous)
+        if not self._initial_device_scan_done:
+            for device in devices:
+                if device.state == "device":
+                    self.repo.remember(device.serial, kind="wifi" if ":" in device.serial else "usb")
         self._render_device_table()
         if not self._last_selected_serial:
             self._last_selected_serial = self.current_serial()
@@ -1058,6 +1075,20 @@ class MainWindow(QMainWindow):
         else:
             self._set_shell_log_view("")
         self._update_scrcpy_status(serial)
+
+    def _rebuild_device_combo(self, selected_serial: str = "") -> None:
+        """Synchronize the hidden device selector with the visible table."""
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        for device in self.devices:
+            self.device_combo.addItem(self._device_combo_text(device), device.serial)
+        if not self.devices:
+            self.device_combo.addItem("未检测到设备", "")
+        if selected_serial:
+            index = self.device_combo.findData(selected_serial)
+            if index >= 0:
+                self.device_combo.setCurrentIndex(index)
+        self.device_combo.blockSignals(False)
 
     def current_serial(self) -> str:
         return str(self.device_combo.currentData() or "")
@@ -1391,8 +1422,8 @@ class MainWindow(QMainWindow):
         if not serial:
             return self._show_error("请先选择设备")
         device = next((item for item in self.devices if item.serial == serial), None)
-        if not device or device.state != "device":
-            self.statusBar().showMessage(f"设备已经离线 · {serial}")
+        if not device:
+            self.statusBar().showMessage(f"设备不存在 · {serial}")
             return
         if ":" not in serial:
             return self._show_error("这是 USB 设备。请拔出 USB，或在 ADB 设置中停止对应连接；adb disconnect 只适用于无线设备。")
@@ -1419,10 +1450,13 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"设备已断开 · {serial}")
 
     def _mark_device_offline(self, serial: str) -> None:
+        selected = self.current_serial()
         for index, device in enumerate(self.devices):
             if device.serial == serial:
                 self.devices[index] = Device(serial=device.serial, state="offline", model=device.model)
-                self._update_device_marker(serial)
+                self.devices = sort_devices_by_status(self.devices)
+                self._rebuild_device_combo(selected)
+                self._render_device_table()
                 break
 
     def connect_all_history(self) -> None:
@@ -1527,10 +1561,13 @@ class MainWindow(QMainWindow):
                 for button in actions.findChildren(QToolButton):
                     enabled = device.state == "device"
                     action_name = button.property("actionName")
-                    if action_name == "disconnect":
-                        enabled = enabled and ":" in device.serial
-                    elif action_name == "connect":
-                        enabled = device.state == "offline" and ":" in device.serial
+                    if action_name in {"disconnect", "connect"}:
+                        # Keep the transport control usable for every state
+                        # reported for a wireless endpoint (including
+                        # ``unauthorized`` and ``offline``).
+                        enabled = ":" in device.serial
+                    elif action_name == "delete":
+                        enabled = device.state == "offline"
                     button.setEnabled(enabled and not busy)
         if not hasattr(self, "connect_button"):
             return
@@ -1608,6 +1645,31 @@ class MainWindow(QMainWindow):
             self._reload_history(next_address)
             self.device_output.setPlainText(f"已删除连接历史：{address}\n设备本身不会被断开。")
             self.statusBar().showMessage(f"已删除连接记录 · {address}（设备连接不受影响）")
+
+    def remove_offline_device(self) -> None:
+        """Forget an offline device and its matching connection history."""
+        if self._connection_busy:
+            self.statusBar().showMessage("连接状态操作正在进行，请稍候…")
+            return
+        serial = self.current_serial()
+        device = next((item for item in self.devices if item.serial == serial), None)
+        if not device:
+            return self._show_error("请先选择要删除的设备")
+        if device.state != "offline":
+            return self._show_error("只有离线设备可以从列表中删除")
+
+        self.devices = [item for item in self.devices if item.serial != serial]
+        self._pending_disconnects.discard(serial)
+        self._dismissed_devices.add(serial)
+        self.repo.remove_history(serial)
+        self._rebuild_device_combo()
+        self._render_device_table()
+        self._last_selected_serial = self.current_serial()
+        self._reload_history("")
+        self._set_shell_log_view(self.current_serial())
+        self._update_scrcpy_status(self.current_serial())
+        self.device_output.setPlainText(f"已删除离线设备：{serial}\n同时移除了对应的连接历史。")
+        self.statusBar().showMessage(f"已删除离线设备 · {serial}")
 
     def _history_selection_changed(self, index: int) -> None:
         if index < 0:

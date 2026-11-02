@@ -16,15 +16,15 @@ from PySide6.QtWidgets import (
 
 
 TERMINAL_DARK_STYLE = """
-#terminalWindow { background: #0D1117; color: #C9D1D9; }
-#terminalTitleBar { background: #161B22; border-bottom: 1px solid #30363D; }
+#terminalWindow { background: #0D1117; color: #C9D1D9; border: 1px solid #30363D; border-radius: 9px; }
+#terminalTitleBar { background: #161B22; border-bottom: 1px solid #30363D; border-top-left-radius: 8px; border-top-right-radius: 8px; }
 #terminalTitle { color: #F0F6FC; font-size: 13px; font-weight: 700; }
 #terminalDevice { background: #153C32; color: #6EE7B7; border: 1px solid #245B57; border-radius: 5px; padding: 3px 9px; }
 """
 
 TERMINAL_LIGHT_STYLE = """
-#terminalWindow { background: #FFFFFF; color: #24292F; }
-#terminalTitleBar { background: #FFFFFF; border-bottom: 1px solid #E5E7EB; }
+#terminalWindow { background: #FFFFFF; color: #24292F; border: 1px solid #CBD5E1; border-radius: 9px; }
+#terminalTitleBar { background: #FFFFFF; border-bottom: 1px solid #E5E7EB; border-top-left-radius: 8px; border-top-right-radius: 8px; }
 #terminalTitle { color: #111827; font-size: 13px; font-weight: 700; }
 #terminalDevice { background: #F0FDFA; color: #0F8F83; border: 1px solid #CCFBF1; border-radius: 5px; padding: 3px 9px; }
 """
@@ -272,6 +272,7 @@ class DeviceTerminalWindow(QWidget):
         self.rows = 24
 
         self.setObjectName("terminalWindow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
@@ -294,10 +295,15 @@ class DeviceTerminalWindow(QWidget):
         return f"{self.device_name}[{self.serial}]"
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
+        # The window is intentionally frameless so the custom title bar can
+        # provide the native controls.  Keep a one-pixel inset around the
+        # contents so the outer border remains visible instead of being
+        # covered by the WebEngine surface on light backgrounds.
+        layout = QVBoxLayout(self); layout.setContentsMargins(1, 1, 1, 1); layout.setSpacing(0)
         self.title_bar = TerminalTitleBar(self, self.device_label); layout.addWidget(self.title_bar)
 
         self.web_view = QWebEngineView(self)
+        self.web_view.setObjectName("terminalSurface")
         self._set_web_background(self.theme)
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
@@ -400,7 +406,9 @@ class DeviceTerminalWindow(QWidget):
         """Keep Chromium's pre-DOM surface aligned with the Shell theme."""
         color = "#0D1117" if theme == "dark" else "#FFFFFF"
         self.web_view.page().setBackgroundColor(QColor(color))
-        self.web_view.setStyleSheet(f"background: {color}; border: none;")
+        self.web_view.setStyleSheet(
+            f"background: {color}; border: none; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;"
+        )
 
     def toggle_theme(self) -> None:
         theme = "light" if self.theme == "dark" else "dark"
