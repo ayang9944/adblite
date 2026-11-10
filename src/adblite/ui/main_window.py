@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QProcess, QRect, QSize, QTimer, Signal, Slot, Qt
@@ -261,7 +262,6 @@ class HistoryComboBox(QComboBox):
                 if index.isValid() and self.delete_rect(self.view().visualRect(index)).contains(position):
                     address = index.data(Qt.ItemDataRole.UserRole)
                     if address:
-                        self.hidePopup()
                         self.removeRequested.emit(str(address))
                     return True
         return super().eventFilter(watched, event)
@@ -273,6 +273,7 @@ class ScrcpyHandle:
         self.process = process
         self.pid = process.pid if process else pid
         self.serial = serial
+        self.video_ready = threading.Event()
         if process and log_callback:
             for stream_name in ("stdout", "stderr"):
                 stream = getattr(process, stream_name)
@@ -314,6 +315,9 @@ class ScrcpyHandle:
 
 class MainWindow(QMainWindow):
     scrcpy_log = Signal(str)
+    scrcpy_ready = Signal(str)
+    scrcpy_start_failed = Signal(str, str)
+    scrcpy_finished = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -332,6 +336,8 @@ class MainWindow(QMainWindow):
         # One scrcpy process per device serial. Starting another device must
         # never overwrite the process handle of an existing session.
         self.scrcpy_processes: dict[str, ScrcpyHandle] = {}
+        self.scrcpy_starting: set[str] = set()
+        self.scrcpy_video_ready: set[str] = set()
         self.shell_processes: dict[str, QProcess] = {}
         self.terminal_windows: dict[str, DeviceTerminalWindow] = {}
         self.shell_privileged: dict[str, bool] = {}
@@ -360,6 +366,9 @@ class MainWindow(QMainWindow):
         self.resize(1120, 720)
         self._build_ui()
         self.scrcpy_log.connect(self._append_scrcpy_log)
+        self.scrcpy_ready.connect(self._scrcpy_start_ready)
+        self.scrcpy_start_failed.connect(self._scrcpy_start_failed)
+        self.scrcpy_finished.connect(self._scrcpy_finished)
         self._discover_scrcpy_processes()
         self.refresh_devices()
         self.timer = QTimer(self)
@@ -1167,6 +1176,8 @@ class MainWindow(QMainWindow):
         self._set_shell_log_view(serial)
 
     def _scrcpy_is_running(self, serial: str) -> bool:
+        if serial in self.scrcpy_starting:
+            return False
         process = self.scrcpy_processes.get(serial)
         return bool(process and process.poll() is None)
 
@@ -1640,9 +1651,22 @@ class MainWindow(QMainWindow):
         if address:
             current_row = self.history_combo.findData(address)
             self.repo.remove_history(address)
-            remaining = [item.address for item in self.repo.histories() if item.kind == "wifi" or ":" in item.address]
-            next_address = remaining[min(max(current_row, 0), len(remaining) - 1)] if remaining else ""
-            self._reload_history(next_address)
+            # Update the existing model instead of clearing and rebuilding the
+            # combo box.  Rebuilding causes Qt to close the popup after every
+            # deletion, forcing the user to open it again for the next row.
+            if current_row >= 0:
+                self.history_combo.blockSignals(True)
+                self.history_combo.removeItem(current_row)
+                if self.history_combo.count():
+                    next_row = min(current_row, self.history_combo.count() - 1)
+                    self.history_combo.setCurrentIndex(next_row)
+                    self.history_combo.lineEdit().setText(str(self.history_combo.itemData(next_row)))
+                else:
+                    self.history_combo.setCurrentIndex(-1)
+                    self.history_combo.clearEditText()
+                self.history_combo.blockSignals(False)
+                self.history_combo.delete_hover_row = -1
+                self.history_combo.view().viewport().update()
             self.device_output.setPlainText(f"已删除连接历史：{address}\n设备本身不会被断开。")
             self.statusBar().showMessage(f"已删除连接记录 · {address}（设备连接不受影响）")
 
@@ -1732,6 +1756,9 @@ class MainWindow(QMainWindow):
     def start_scrcpy(self) -> None:
         serial = self.current_serial()
         if not serial: return self._show_error("请先选择设备")
+        if serial in self.scrcpy_starting:
+            self.statusBar().showMessage(f"Scrcpy 正在启动 · {serial}")
+            return
         existing = self.scrcpy_processes.get(serial)
         if existing and existing.poll() is None:
             return self._show_error(f"{serial} 已经有一个 scrcpy 窗口在运行")
@@ -1753,11 +1780,67 @@ class MainWindow(QMainWindow):
         if self.scrcpy_extra.text().strip(): args += shlex.split(self.scrcpy_extra.text(), posix=False)
         try:
             process = ProcessRunner.start(self.resolver.resolve("scrcpy"), args)
-            self.scrcpy_processes[serial] = ScrcpyHandle(process=process, serial=serial, log_callback=self._emit_scrcpy_log)
-            self._update_scrcpy_status(serial)
-            self.scrcpy_output.appendPlainText("启动：scrcpy " + " ".join(args))
-            self.statusBar().showMessage(f"Scrcpy 已启动 · {serial}")
+            self.scrcpy_starting.add(serial)
+            handle = ScrcpyHandle(process=process, serial=serial, log_callback=self._emit_scrcpy_log)
+            self.scrcpy_processes[serial] = handle
+            if serial in self.scrcpy_video_ready:
+                handle.video_ready.set()
+                self.scrcpy_video_ready.discard(serial)
+            self.scrcpy_output.appendPlainText("正在启动：scrcpy " + " ".join(args))
+            self._show_device_log()
+            self.device_output.setPlainText("正在启动：scrcpy " + " ".join(args))
+            self.statusBar().showMessage(f"Scrcpy 正在启动 · {serial}")
+            threading.Thread(
+                target=self._wait_for_scrcpy_window,
+                args=(serial, handle),
+                name=f"ADBLiteScrcpy-{serial}",
+                daemon=True,
+            ).start()
         except Exception as exc: self._show_error(str(exc))
+
+    def _wait_for_scrcpy_window(self, serial: str, handle: ScrcpyHandle) -> None:
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            if self.scrcpy_processes.get(serial) is not handle:
+                return
+            if handle.poll() is not None:
+                self.scrcpy_start_failed.emit(serial, "进程已退出，投屏窗口未出现")
+                return
+            if handle.video_ready.wait(0.15):
+                self.scrcpy_ready.emit(serial)
+                return
+            time.sleep(0.01)
+        self.scrcpy_start_failed.emit(serial, "等待投屏窗口超时（90 秒）")
+
+    @Slot(str)
+    def _scrcpy_start_ready(self, serial: str) -> None:
+        handle = self.scrcpy_processes.get(serial)
+        if not handle:
+            return
+        if serial not in self.scrcpy_starting:
+            return
+        if handle.poll() is not None:
+            self._scrcpy_start_failed(serial, "投屏进程已退出")
+            return
+        self.scrcpy_starting.discard(serial)
+        self.scrcpy_video_ready.discard(serial)
+        self._update_scrcpy_status(serial)
+        self.scrcpy_output.appendPlainText(f"Scrcpy 投屏窗口已出现：{serial}")
+        self.statusBar().showMessage(f"Scrcpy 已启动 · {serial}")
+
+    @Slot(str, str)
+    def _scrcpy_start_failed(self, serial: str, message: str) -> None:
+        handle = self.scrcpy_processes.get(serial)
+        if not handle or serial not in self.scrcpy_starting:
+            return
+        self.scrcpy_starting.discard(serial)
+        self.scrcpy_video_ready.discard(serial)
+        self.scrcpy_processes.pop(serial, None)
+        if handle.poll() is None:
+            handle.terminate()
+        self._update_scrcpy_status(serial)
+        self.scrcpy_output.appendPlainText(f"Scrcpy 启动失败：{message}")
+        self.statusBar().showMessage(f"Scrcpy 启动失败 · {serial} · {message}")
 
     def stop_scrcpy(self) -> None:
         serial = self.current_serial()
@@ -1766,22 +1849,53 @@ class MainWindow(QMainWindow):
         process = self.scrcpy_processes.get(serial)
         if not process or process.poll() is not None:
             self.scrcpy_processes.pop(serial, None)
+            self.scrcpy_starting.discard(serial)
+            self.scrcpy_video_ready.discard(serial)
             self._update_scrcpy_status(serial)
             self.scrcpy_output.appendPlainText(f"{serial} 当前没有运行中的 scrcpy")
             self.statusBar().showMessage(f"{serial} 没有运行中的 Scrcpy")
             return
         process.terminate()
         self.scrcpy_processes.pop(serial, None)
+        self.scrcpy_starting.discard(serial)
+        self.scrcpy_video_ready.discard(serial)
         self._update_scrcpy_status(serial)
         self.scrcpy_output.appendPlainText(f"{serial} 的 scrcpy 已停止")
         self.statusBar().showMessage(f"Scrcpy 已停止 · {serial}")
 
     def _emit_scrcpy_log(self, serial: str, line: str) -> None:
+        if re.search(r"\bTexture:\s*\d+\s*x\s*\d+", line, re.IGNORECASE):
+            self.scrcpy_video_ready.add(serial)
+            handle = self.scrcpy_processes.get(serial)
+            if handle:
+                handle.video_ready.set()
+        if "scrcpy 进程已退出" in line:
+            self.scrcpy_finished.emit(serial)
         self.scrcpy_log.emit(f"[{serial}] {line}")
 
     def _append_scrcpy_log(self, line: str) -> None:
         if hasattr(self, "scrcpy_output"):
             self.scrcpy_output.appendPlainText(line)
+        if hasattr(self, "device_output"):
+            self._show_device_log()
+            self.device_output.appendPlainText(line)
+
+    @Slot(str)
+    def _scrcpy_finished(self, serial: str) -> None:
+        """Clear stale running/starting state after the native window closes."""
+        handle = self.scrcpy_processes.get(serial)
+        if not handle:
+            return
+        if serial in self.scrcpy_starting:
+            self._scrcpy_start_failed(serial, "进程已退出，投屏窗口未出现")
+            return
+        if handle.poll() is None:
+            return
+        self.scrcpy_processes.pop(serial, None)
+        self.scrcpy_video_ready.discard(serial)
+        self._update_scrcpy_status(serial)
+        if serial == self.current_serial():
+            self.statusBar().showMessage(f"Scrcpy 已退出 · {serial}")
 
     def closeEvent(self, event) -> None:
         # scrcpy is an independent native window. Do not terminate its
