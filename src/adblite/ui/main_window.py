@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from ..domain import ConnectionHistory, CustomCommand, Device, merge_device_statuses, sort_devices_by_status
 from ..infrastructure import AdbClient, BinaryResolver, ProcessRunner, SettingsRepository
 from ..terminal import TerminalLogState, flush_terminal_log, render_terminal_log
+from .phone_bridge_page import DeviceToolsPage
 from .terminal_window import DeviceTerminalWindow
 
 GITHUB_PROJECT_URL = "https://github.com/ayang9944/adblite"
@@ -115,6 +116,12 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { background: trans
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QPlainTextEdit { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
 QStatusBar { background: #0F172A; color: #94A3B8; border: none; }
+#deviceToolsTabs { background: transparent; border: none; }
+#deviceToolsTabs::pane { background: transparent; border: none; }
+#deviceToolsTabs::tab { background: transparent; color: #94A3B8; border: none; border-radius: 6px; padding: 8px 14px; margin: 4px 2px; }
+#deviceToolsTabs::tab:selected { background: #183B3A; color: #5EEAD4; }
+#bridgePcBox, #bridgeReceivedBox { margin-top: 16px; padding-top: 10px; }
+#bridgePcBox::title, #bridgeReceivedBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 6px; color: #CBD5E1; }
 """
 DARK_STYLE += f"""
 QComboBox::down-arrow {{ image: url("{interface_asset_path('chevron-down').as_posix()}"); width: 12px; height: 8px; }}
@@ -180,6 +187,9 @@ QScrollBar::handle:vertical { background: #94A3B8; }
 QScrollBar::handle:vertical:hover { background: #64748B; }
 #commandList::item:selected { background: #F1F3F5; color: #1F2937; border: none; outline: none; }
 QStatusBar { background: #F4F6F8; border: none; }
+#deviceToolsTabs::tab { color: #6B7280; }
+#deviceToolsTabs::tab:selected { background: #E9F8F5; color: #0F8F83; }
+#bridgePcBox::title, #bridgeReceivedBox::title { color: #374151; }
 #terminalHeader { background: #FFFFFF; border-bottom-color: #D8E0E8; }
 #terminalDevice { background: #F0FDFA; color: #0F8F83; border-color: #CCFBF1; }
 #terminalSurface { background: #FCFCFD; color: #111827; selection-background-color: #99F6E4; }
@@ -362,7 +372,7 @@ class MainWindow(QMainWindow):
         self._next_job_token = 0
         self._job_callbacks: dict[int, tuple[object, object]] = {}
         self._async_threads: dict[int, threading.Thread] = {}
-        self.setWindowTitle(f"ADBLite v{APP_VERSION} — ADB · Scrcpy · 快捷命令")
+        self.setWindowTitle(f"ADBLite v{APP_VERSION} — ADB · Scrcpy · 手机桥接 · 快捷命令")
         self.resize(1120, 720)
         self._build_ui()
         self.scrcpy_log.connect(self._append_scrcpy_log)
@@ -389,6 +399,7 @@ class MainWindow(QMainWindow):
         self.navigation.setElideMode(Qt.TextElideMode.ElideNone)
         navigation_items = (
             ("设备", "查看和管理已连接的 USB/无线 ADB 设备"),
+            ("设备工具", "应用管理、文件传输和手机桥接工具"),
             ("快捷命令", "保存并运行常用 ADB、Scrcpy、CMD 和进程命令"),
             ("设置", "配置外部工具路径、界面主题和运行参数"),
         )
@@ -422,7 +433,7 @@ class MainWindow(QMainWindow):
 
         self.scrcpy_output = QPlainTextEdit(self); self.scrcpy_output.hide()
         self.page_stack = QStackedWidget()
-        self.page_stack.addWidget(self._devices_page()); self.page_stack.addWidget(self._commands_page()); self.page_stack.addWidget(self._settings_page())
+        self.page_stack.addWidget(self._devices_page()); self.page_stack.addWidget(self._device_tools_page()); self.page_stack.addWidget(self._commands_page()); self.page_stack.addWidget(self._settings_page())
         self.navigation.currentChanged.connect(self._switch_page)
         self.navigation.setCurrentIndex(0)
         self._switch_page(0)
@@ -440,6 +451,12 @@ class MainWindow(QMainWindow):
         if not on_devices_page:
             self.device_search.clear()
             self.device_search.hide()
+
+    def _device_tools_page(self) -> QWidget:
+        self.device_tools_page = DeviceToolsPage(self.repo)
+        self.phone_bridge_page = self.device_tools_page.phone_bridge_page
+        self.phone_bridge_page.status_message.connect(self.statusBar().showMessage)
+        return self.device_tools_page
 
     def _toggle_device_search(self) -> None:
         if self.device_search.isVisible():
@@ -1900,6 +1917,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         # scrcpy is an independent native window. Do not terminate its
         # processes when ADBLite exits; they remain usable on their devices.
+        if hasattr(self, "phone_bridge_page"):
+            self.phone_bridge_page.stop_server()
         self.scrcpy_processes.clear()
         if self.shell_process and self.shell_process.state() != QProcess.ProcessState.NotRunning:
             self.shell_process.terminate()

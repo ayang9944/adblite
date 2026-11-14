@@ -51,6 +51,7 @@ class SettingsRepository:
             "theme": "light", "terminal_theme": "light",
             "scrcpy_max_size": 1920, "scrcpy_max_fps": 60, "scrcpy_bitrate": "8M",
             "scrcpy_extra": "", "scrcpy_no_audio": False,
+            "phone_bridge_port": 8899, "phone_bridge_bind": "0.0.0.0", "phone_bridge_token": "",
         }
         self.load()
 
