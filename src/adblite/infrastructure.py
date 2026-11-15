@@ -111,8 +111,11 @@ class BinaryResolver:
             configured_path = Path(configured)
             if configured_path.is_file():
                 return str(configured_path)
-            if configured_path.is_dir() and (configured_path / f"{name}.exe").exists():
-                return str(configured_path / f"{name}.exe")
+            if configured_path.is_dir():
+                for binary_name in (name, f"{name}.exe"):
+                    candidate = configured_path / binary_name
+                    if candidate.is_file():
+                        return str(candidate)
         if name == "adb":
             explicit = os.environ.get("ADB_PATH", "").strip()
             if explicit and Path(explicit).exists():
@@ -133,6 +136,12 @@ class BinaryResolver:
                 Path.home() / "scoop" / "apps" / "scrcpy" / "current" / "scrcpy.exe",
                 Path(os.environ.get("PROGRAMFILES", "")) / "scrcpy" / "scrcpy.exe",
             ])
+        # Homebrew is the standard macOS installation path.  Include both
+        # Apple Silicon and Intel prefixes so the app works even when it was
+        # launched from a shell that did not inherit brew's PATH setup.
+        if os.name != "nt":
+            for prefix in (Path("/opt/homebrew"), Path("/usr/local")):
+                candidates.extend([prefix / "bin" / name, prefix / "bin" / f"{name}.exe"])
         for candidate in candidates:
             if candidate.exists():
                 return str(candidate)
@@ -165,10 +174,10 @@ class ProcessRunner:
         return value.decode("utf-8", errors="replace")
 
     @staticmethod
-    def run(program: str, args: list[str], timeout: int = 120, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    def run(program: str, args: list[str], timeout: int = 120, cwd: str | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         if not program:
             raise FileNotFoundError("未找到可执行文件，请在设置中配置路径")
-        result = subprocess.run([program, *args], capture_output=True, text=False, timeout=timeout, cwd=cwd, creationflags=ProcessRunner._hidden_window_flags())
+        result = subprocess.run([program, *args], capture_output=True, text=False, timeout=timeout, cwd=cwd, env=env, creationflags=ProcessRunner._hidden_window_flags())
         return subprocess.CompletedProcess(
             result.args,
             result.returncode,
@@ -215,11 +224,11 @@ class ProcessRunner:
         )
 
     @staticmethod
-    def start(program: str, args: list[str], cwd: str | None = None) -> subprocess.Popen[str]:
+    def start(program: str, args: list[str], cwd: str | None = None, env: dict[str, str] | None = None) -> subprocess.Popen[str]:
         if not program:
             raise FileNotFoundError("未找到可执行文件，请在设置中配置路径")
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | ProcessRunner._hidden_window_flags()
-        return subprocess.Popen([program, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", cwd=cwd, creationflags=flags)
+        return subprocess.Popen([program, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env, creationflags=flags)
 
 
 class AdbClient:

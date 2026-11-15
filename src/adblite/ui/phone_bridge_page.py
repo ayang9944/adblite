@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import secrets
+import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QTimer, QUrl, QSize, Signal, Qt
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -14,14 +16,20 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QTabBar,
+    QStackedWidget,
     QSpinBox,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..infrastructure import SettingsRepository
 from ..phone_bridge import PhoneBridgeServer
+
+
+def interface_icon(name: str) -> QIcon:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+    return QIcon(str(base / "assets" / "icons" / f"{name}.svg"))
 
 
 class PhoneBridgePage(QWidget):
@@ -42,34 +50,40 @@ class PhoneBridgePage(QWidget):
     def _build_ui(self) -> None:
         self.setObjectName("contentPage")
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 14, 14, 14)
-        outer.setSpacing(12)
+        # The parent tool workspace owns the horizontal gutter so the tool
+        # navigation and the page content share exactly the same left edge.
+        outer.setContentsMargins(0, 20, 0, 24)
+        outer.setSpacing(14)
 
-        header = QHBoxLayout()
-        title = QLabel("手机桥接")
-        title.setObjectName("emptyTitle")
-        header.addWidget(title)
-        hint = QLabel("通过局域网浏览器在电脑和手机之间传递文本")
-        hint.setObjectName("pageHint")
-        header.addWidget(hint)
-        header.addStretch()
-        self.status_label = QLabel("未启动")
-        self.status_label.setObjectName("statusLabel")
-        header.addWidget(self.status_label)
-        outer.addLayout(header)
+        header = QFrame(); header.setObjectName("toolHeader")
+        header_layout = QHBoxLayout(header); header_layout.setContentsMargins(18, 14, 18, 14); header_layout.setSpacing(12)
+        header_icon = QLabel(); header_icon.setPixmap(interface_icon("usb").pixmap(24, 24)); header_icon.setFixedSize(28, 28)
+        header_layout.addWidget(header_icon, 0, Qt.AlignmentFlag.AlignTop)
+        title = QLabel("手机桥接"); title.setObjectName("toolTitle"); header_layout.addWidget(title)
+        header_layout.addStretch()
+        self.service_toggle_button = QPushButton("启动"); self.service_toggle_button.setObjectName("serviceToggleButton"); self.service_toggle_button.setIcon(interface_icon("play")); self.service_toggle_button.setIconSize(QSize(16, 16)); self.service_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor); self.service_toggle_button.clicked.connect(self._toggle_server); header_layout.addWidget(self.service_toggle_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addWidget(header)
 
-        settings = QGroupBox()
-        settings.setObjectName("bridgeSettingsBox")
+        settings = QGroupBox("连接设置")
+        settings.setObjectName("bridgeSettingsPanel")
         settings_layout = QFormLayout(settings)
-        settings_layout.addRow(QLabel("服务设置"))
+        settings_layout.setContentsMargins(16, 22, 16, 14)
+        settings_layout.setHorizontalSpacing(18)
+        settings_layout.setVerticalSpacing(10)
+        settings_layout.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        settings_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        settings_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.port_spin = QSpinBox()
         self.port_spin.setRange(0, 65535)
         self.port_spin.setValue(int(self.repo.data.get("phone_bridge_port", 8899)))
+        self.port_spin.setMinimumWidth(180)
         self.port_spin.setToolTip("0 表示自动选择空闲端口")
         self.bind_edit = QLineEdit(str(self.repo.data.get("phone_bridge_bind", "0.0.0.0")))
+        self.bind_edit.setMinimumWidth(260)
         self.bind_edit.setPlaceholderText("0.0.0.0")
         self.bind_edit.setToolTip("0.0.0.0 允许局域网手机访问；127.0.0.1 仅本机可访问")
         self.token_edit = QLineEdit(str(self.repo.data.get("phone_bridge_token", "")))
+        self.token_edit.setMinimumWidth(260)
         self.token_edit.setPlaceholderText("留空则自动生成；也可以自定义为 123456")
         self.token_edit.setToolTip("手机访问令牌。建议使用易输入但不容易猜到的短字符串")
         settings_layout.addRow("端口", self.port_spin)
@@ -80,18 +94,6 @@ class PhoneBridgePage(QWidget):
         generate_token.clicked.connect(lambda: self.token_edit.setText(secrets.token_urlsafe(8)))
         token_row.addWidget(generate_token)
         settings_layout.addRow("访问令牌", token_row)
-        service_row = QHBoxLayout()
-        self.start_button = QPushButton("启动服务")
-        self.start_button.setObjectName("primaryButton")
-        self.start_button.clicked.connect(self.start_server)
-        self.stop_button = QPushButton("停止服务")
-        self.stop_button.setObjectName("dangerButton")
-        self.stop_button.clicked.connect(self.stop_server)
-        self.stop_button.setEnabled(False)
-        service_row.addWidget(self.start_button)
-        service_row.addWidget(self.stop_button)
-        service_row.addStretch()
-        settings_layout.addRow(service_row)
         self.url_edit = QLineEdit()
         self.url_edit.setReadOnly(True)
         self.url_edit.setPlaceholderText("启动后显示手机访问地址")
@@ -107,10 +109,11 @@ class PhoneBridgePage(QWidget):
         outer.addWidget(settings)
 
         content = QHBoxLayout()
-        content.setSpacing(12)
-        pc_box = QGroupBox("电脑 → 手机")
+        content.setSpacing(14)
+        pc_box = QFrame()
         pc_box.setObjectName("bridgePcBox")
-        pc_layout = QVBoxLayout(pc_box)
+        pc_layout = QVBoxLayout(pc_box); pc_layout.setContentsMargins(14, 14, 14, 14); pc_layout.setSpacing(10)
+        pc_title = QLabel("电脑 → 手机"); pc_title.setObjectName("bridgePanelTitle"); pc_layout.addWidget(pc_title)
         self.text_edit = QPlainTextEdit()
         self.text_edit.setPlaceholderText("输入或粘贴文本，手机打开地址后即可查看")
         self.text_edit.setMinimumHeight(180)
@@ -124,9 +127,10 @@ class PhoneBridgePage(QWidget):
         pc_layout.addLayout(pc_actions)
         content.addWidget(pc_box, 1)
 
-        received_box = QGroupBox("手机 → 电脑")
+        received_box = QFrame()
         received_box.setObjectName("bridgeReceivedBox")
-        received_layout = QVBoxLayout(received_box)
+        received_layout = QVBoxLayout(received_box); received_layout.setContentsMargins(14, 14, 14, 14); received_layout.setSpacing(10)
+        received_title = QLabel("手机 → 电脑"); received_title.setObjectName("bridgePanelTitle"); received_layout.addWidget(received_title)
         self.received_edit = QPlainTextEdit()
         self.received_edit.setReadOnly(True)
         self.received_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -141,9 +145,22 @@ class PhoneBridgePage(QWidget):
         content.addWidget(received_box, 1)
         outer.addLayout(content, 1)
 
-        note = QLabel("提示：服务只传递文本，不提供 APK、文件或 ADB 命令接口。请仅把访问地址分享给可信设备。")
-        note.setObjectName("pageHint")
+        note = QLabel("安全提示：服务只传递文本，不提供 APK、文件或 ADB 命令接口。请仅把访问地址分享给可信设备。")
+        note.setObjectName("fieldHint")
         outer.addWidget(note)
+
+    def _toggle_server(self) -> None:
+        if self.server and self.server.running:
+            self.stop_server()
+        else:
+            self.start_server()
+
+    def _set_service_state(self, running: bool) -> None:
+        self.service_toggle_button.setText("停止" if running else "启动")
+        self.service_toggle_button.setIcon(interface_icon("stop" if running else "play"))
+        self.service_toggle_button.setProperty("running", running)
+        self.service_toggle_button.style().unpolish(self.service_toggle_button)
+        self.service_toggle_button.style().polish(self.service_toggle_button)
 
     def _data_dir(self) -> Path:
         return self.repo.path.parent / "phone_bridge"
@@ -168,29 +185,25 @@ class PhoneBridgePage(QWidget):
             url = self.server.start()
         except (OSError, ValueError) as exc:
             self.server = None
-            self.status_label.setText("启动失败")
+            self._set_service_state(False)
             self.status_message.emit(f"手机桥接启动失败：{exc}")
             return
         self.url_edit.setText(url)
         self.token_edit.setText(self.server.token)
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        self._set_service_state(True)
         self.port_spin.setEnabled(False)
         self.bind_edit.setEnabled(False)
         self.token_edit.setEnabled(False)
-        self.status_label.setText(f"运行中 · {self.server.port}")
         self.status_message.emit(f"手机桥接已启动 · {url}")
 
     def stop_server(self) -> None:
         if self.server:
             self.server.stop()
         self.server = None
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self._set_service_state(False)
         self.port_spin.setEnabled(True)
         self.bind_edit.setEnabled(True)
         self.token_edit.setEnabled(True)
-        self.status_label.setText("未启动")
         self.status_message.emit("手机桥接已停止")
 
     def save_text(self) -> None:
@@ -239,17 +252,44 @@ class PhoneBridgePage(QWidget):
             QDesktopServices.openUrl(QUrl(self.url_edit.text()))
 
 
-class DeviceToolsPage(QTabWidget):
-    """Container for device-related tools.
+class ToolPlaceholderPage(QWidget):
+    """Visual placeholder for a tool whose backend is not wired yet."""
 
-    The first tool is the LAN text bridge.  APK management and file transfer
-    can be added as sibling tabs without expanding the top-level navigation.
-    """
+    def __init__(self, title: str, description: str, icon_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("toolPlaceholder")
+        layout = QVBoxLayout(self); layout.setContentsMargins(24, 24, 24, 24); layout.setSpacing(10)
+        layout.addStretch()
+        icon = QLabel(); icon.setObjectName("placeholderIcon"); icon.setPixmap(interface_icon(icon_name).pixmap(28, 28)); icon.setFixedSize(52, 52); icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        heading = QLabel(title); heading.setObjectName("placeholderTitle"); heading.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(heading)
+        hint = QLabel(description + "\n页面结构已预留，后续接入设备能力后可直接扩展。"); hint.setObjectName("toolSubtitle"); hint.setAlignment(Qt.AlignmentFlag.AlignCenter); hint.setWordWrap(True); layout.addWidget(hint, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch()
+
+
+class DeviceToolsPage(QWidget):
+    """Tool workspace with a compact horizontal tool navigation."""
 
     def __init__(self, repo: SettingsRepository, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("deviceToolsTabs")
-        self.setDocumentMode(True)
+        self.setObjectName("deviceToolsPage")
+        layout = QVBoxLayout(self); layout.setContentsMargins(24, 14, 24, 14); layout.setSpacing(12)
+        nav_bar = QFrame(); nav_bar.setObjectName("toolNavBar")
+        nav_layout = QHBoxLayout(nav_bar); nav_layout.setContentsMargins(14, 8, 14, 8); nav_layout.setSpacing(14)
+        nav_title = QLabel("设备工具"); nav_title.setObjectName("toolNavTitle"); nav_layout.addWidget(nav_title)
+        self.tool_navigation = QTabBar(); self.tool_navigation.setObjectName("toolNavTabs"); self.tool_navigation.setDocumentMode(True); self.tool_navigation.setDrawBase(False); self.tool_navigation.setExpanding(False); self.tool_navigation.setUsesScrollButtons(False); self.tool_navigation.setElideMode(Qt.TextElideMode.ElideNone); nav_layout.addWidget(self.tool_navigation, 1)
+        layout.addWidget(nav_bar)
+        self.tool_stack = QStackedWidget(); self.tool_stack.setObjectName("toolStack")
         self.phone_bridge_page = PhoneBridgePage(repo, self)
-        self.addTab(self.phone_bridge_page, "手机桥接")
+        tools = (
+            ("手机桥接", "在电脑和手机之间传递文本", "usb", self.phone_bridge_page),
+            ("应用管理", "安装、卸载和查看设备应用", "package", ToolPlaceholderPage("应用管理", "统一管理设备上的 APK 和应用包", "package", self)),
+            ("文件管理", "浏览、上传和下载设备文件", "folder", ToolPlaceholderPage("文件管理", "浏览设备存储并管理文件", "folder", self)),
+        )
+        for title, description, icon_name, page in tools:
+            index = self.tool_navigation.addTab(interface_icon(icon_name), title); self.tool_navigation.setTabToolTip(index, description)
+            self.tool_stack.addWidget(page)
+        self.tool_navigation.currentChanged.connect(self.tool_stack.setCurrentIndex)
+        self.tool_navigation.setCurrentIndex(0)
+        layout.addWidget(self.tool_stack, 1)
 

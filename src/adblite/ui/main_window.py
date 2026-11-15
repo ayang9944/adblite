@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import os
 import shlex
 import subprocess
 import ipaddress
@@ -16,8 +17,8 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractButton, QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-    QSpinBox, QStackedWidget, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget,
+    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
+    QSizePolicy, QSpinBox, QStackedWidget, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTabBar, QTableWidget,
     QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -98,7 +99,15 @@ QPushButton:disabled, QToolButton:disabled { color: #64748B; background: #1A2434
 QGroupBox { background: #151F2E; border: none; border-radius: 8px; margin-top: 0; padding: 0; color: #CBD5E1; }
 QListWidget::item { padding: 9px 8px; border-radius: 5px; }
 #commandList { outline: none; }
-#commandList::item:selected { background: #1C2738; color: #E5E7EB; border: none; outline: none; }
+#commandList { background: transparent; border: none; padding: 0; }
+#commandList::item { background: transparent; color: #94A3B8; border-radius: 8px; padding: 0; margin: 2px 0; }
+#commandList::item:hover { background: #162238; color: #E2E8F0; }
+#commandList::item:selected { background: #183B3A; color: #5EEAD4; border: none; outline: none; }
+#commandRow { background: transparent; }
+#commandRow QLabel { background: transparent; }
+#commandRunnerMeta { color: #64748B; font-size: 11px; }
+#commandDeleteButton { background: transparent; border: none; border-radius: 14px; min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; padding: 0; }
+#commandDeleteButton:hover { background: #3A2028; }
 #deviceTable { background: transparent; border: none; border-radius: 0; gridline-color: transparent; selection-background-color: #1C2738; selection-color: #E5E7EB; }
 #deviceTable::item { background: transparent; padding: 10px; border: none; }
 #deviceTable::item:selected { background: #1C2738; color: #E5E7EB; }
@@ -120,13 +129,90 @@ QStatusBar { background: #0F172A; color: #94A3B8; border: none; }
 #deviceToolsTabs::pane { background: transparent; border: none; }
 #deviceToolsTabs::tab { background: transparent; color: #94A3B8; border: none; border-radius: 6px; padding: 8px 14px; margin: 4px 2px; }
 #deviceToolsTabs::tab:selected { background: #183B3A; color: #5EEAD4; }
-#bridgePcBox, #bridgeReceivedBox { margin-top: 16px; padding-top: 10px; }
-#bridgePcBox::title, #bridgeReceivedBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 6px; color: #CBD5E1; }
 """
 DARK_STYLE += f"""
 QComboBox::down-arrow {{ image: url("{interface_asset_path('chevron-down').as_posix()}"); width: 12px; height: 8px; }}
 QSpinBox::up-arrow {{ image: url("{interface_asset_path('chevron-up').as_posix()}"); width: 10px; height: 7px; }}
 QSpinBox::down-arrow {{ image: url("{interface_asset_path('chevron-down').as_posix()}"); width: 10px; height: 7px; }}
+"""
+
+DARK_STYLE += """
+/* Application shell */
+#appSidebar { background: #0B1220; border-right: 1px solid #1F2A3D; }
+#sidebarBrand { color: #F8FAFC; font-size: 19px; font-weight: 700; }
+#sidebarVersion { color: #64748B; font-size: 11px; }
+#sidebarSection { color: #64748B; font-size: 11px; font-weight: 700; padding: 4px 10px; }
+#navList { background: transparent; border: none; outline: none; padding: 4px 8px; }
+#navList::item { color: #94A3B8; border-radius: 8px; padding: 11px 12px; margin: 2px 0; }
+#navList::item:hover { background: #162238; color: #E2E8F0; }
+#navList::item:selected { background: #183B3A; color: #5EEAD4; font-weight: 600; }
+#sidebarStatus { background: #111B2C; border: 1px solid #24334A; border-radius: 8px; padding: 10px; }
+#sidebarStatusTitle { color: #CBD5E1; font-size: 12px; font-weight: 600; }
+#sidebarStatusText { color: #64748B; font-size: 11px; }
+#topbar { background: #111827; border-bottom: 1px solid #1F2A3D; }
+#pageTitle { color: #F8FAFC; font-size: 18px; font-weight: 700; }
+#pageSubtitle { color: #94A3B8; font-size: 12px; }
+
+/* Shared page primitives */
+#contentPage, #devicesPage { background: #0F1724; }
+#toolCard, #settingsCard, #commandCard, #toolHeader { background: #151F2E; border: 1px solid #223149; border-radius: 10px; }
+#toolHeader { border-color: transparent; }
+#toolTitle { color: #F8FAFC; font-size: 18px; font-weight: 700; }
+#toolSubtitle { color: #94A3B8; font-size: 12px; }
+#sectionTitle { color: #CBD5E1; font-size: 13px; font-weight: 700; }
+#fieldHint { color: #64748B; font-size: 11px; }
+
+/* Device tools */
+#deviceToolsPage { background: #0F1724; }
+#toolNavBar { background: transparent; border: none; border-bottom: 1px solid #334155; border-radius: 0; }
+#toolNavTabs { background: transparent; border: none; }
+#toolNavTabs::tab { background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; padding: 9px 14px 8px; margin: 0 2px; }
+#toolNavTabs::tab:hover { background: transparent; color: #E2E8F0; }
+#toolNavTabs::tab:selected { background: transparent; color: #5EEAD4; border-bottom-color: #5EEAD4; font-weight: 600; }
+#toolNavPanel { background: #111B2C; border: 1px solid #223149; border-radius: 10px; }
+#toolNavTitle { color: #CBD5E1; font-size: 12px; font-weight: 700; }
+#toolNav { background: transparent; border: none; outline: none; padding: 4px; }
+#toolNav::item { color: #94A3B8; border-radius: 8px; padding: 11px 10px; margin: 2px 0; }
+#toolNav::item:hover { background: #162238; color: #E2E8F0; }
+#toolNav::item:selected { background: #183B3A; color: #5EEAD4; font-weight: 600; }
+#toolPlaceholder { background: #151F2E; border: 1px solid #223149; border-radius: 10px; }
+#placeholderTitle { color: #E2E8F0; font-size: 17px; font-weight: 700; }
+#placeholderIcon { background: #183B3A; border-radius: 10px; padding: 12px; }
+
+/* Commands */
+#commandSearch { background: #111B2C; }
+#commandMeta { color: #64748B; font-size: 11px; }
+#commandToolbar { background: transparent; border: none; border-bottom: 1px solid #334155; }
+#commandFilterTabs { background: transparent; border: none; }
+#commandFilterTabs::tab { background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; padding: 9px 12px 8px; margin: 0 2px; }
+#commandFilterTabs::tab:hover { background: transparent; color: #E2E8F0; }
+#commandFilterTabs::tab:selected { background: transparent; color: #5EEAD4; border-bottom-color: #5EEAD4; font-weight: 600; }
+#commandRunner { min-width: 120px; }
+#commandOutputHeader { color: #CBD5E1; font-size: 12px; font-weight: 700; }
+#dangerButton { background: transparent; border-color: transparent; color: #FDA4AF; }
+#dangerButton:hover { background: #3A2028; border-color: #6B2A36; }
+
+/* Settings */
+#settingsNavPanel { background: #111B2C; border: 1px solid #223149; border-radius: 10px; }
+#settingsNav { background: transparent; border: none; outline: none; padding: 4px; }
+#settingsNav::item { color: #94A3B8; border-radius: 8px; padding: 11px 10px; margin: 2px 0; }
+#settingsNav::item:hover { background: #162238; color: #E2E8F0; }
+#settingsNav::item:selected { background: #183B3A; color: #5EEAD4; font-weight: 600; }
+#settingsDescription { color: #94A3B8; font-size: 12px; }
+#settingsActions { background: #111B2C; border-top: 1px solid #223149; }
+
+/* Tool cards and form rhythm */
+#bridgeUrlPanel { background: #111B2C; border: 1px solid #24334A; border-radius: 8px; }
+#bridgeStatusTitle { color: #CBD5E1; font-weight: 600; }
+#bridgeStatusHint { color: #64748B; font-size: 12px; }
+#serviceToggleButton { background: #0F8F83; border: 1px solid #14B8A6; color: white; font-weight: 600; min-width: 72px; }
+#serviceToggleButton:hover { background: #0D9488; }
+#serviceToggleButton[running="true"] { background: #3A2028; border-color: #6B2A36; color: #FDA4AF; }
+#serviceToggleButton[running="true"]:hover { background: #4C1D24; }
+#bridgeSettingsPanel { background: #111B2C; border: 1px solid #24334A; border-radius: 8px; }
+#bridgeSettingsPanel::title { color: #CBD5E1; }
+#bridgePcBox, #bridgeReceivedBox { background: #111B2C; border: 1px solid #24334A; border-radius: 8px; }
+#bridgePanelTitle { color: #CBD5E1; font-size: 15px; font-weight: 700; padding: 0 2px 2px; }
 """
 
 LIGHT_STYLE = DARK_STYLE
@@ -189,10 +275,47 @@ QScrollBar::handle:vertical:hover { background: #64748B; }
 QStatusBar { background: #F4F6F8; border: none; }
 #deviceToolsTabs::tab { color: #6B7280; }
 #deviceToolsTabs::tab:selected { background: #E9F8F5; color: #0F8F83; }
-#bridgePcBox::title, #bridgeReceivedBox::title { color: #374151; }
 #terminalHeader { background: #FFFFFF; border-bottom-color: #D8E0E8; }
 #terminalDevice { background: #F0FDFA; color: #0F8F83; border-color: #CCFBF1; }
 #terminalSurface { background: #FCFCFD; color: #111827; selection-background-color: #99F6E4; }
+"""
+
+LIGHT_STYLE += """
+#appSidebar { background: #FFFFFF; border-right-color: #D8E0E8; }
+#sidebarBrand { color: #1F2937; }
+#sidebarVersion, #sidebarStatusText { color: #9CA3AF; }
+#sidebarSection { color: #6B7280; }
+#navList::item { color: #6B7280; }
+#navList::item:hover, #toolNav::item:hover, #settingsNav::item:hover { background: #F3F7F7; color: #374151; }
+#navList::item:selected, #toolNav::item:selected, #settingsNav::item:selected { background: #E9F8F5; color: #0F766E; }
+#sidebarStatus, #toolNavPanel, #settingsNavPanel { background: #F8FAFC; border-color: #E2E8F0; }
+#toolNavBar { background: transparent; border: none; border-bottom: 1px solid #D8E0E8; }
+#sidebarStatusTitle { color: #374151; }
+#topbar { background: #FFFFFF; border-bottom-color: #D8E0E8; }
+#pageTitle, #toolTitle { color: #1F2937; }
+#pageSubtitle, #toolSubtitle, #settingsDescription { color: #6B7280; }
+#contentPage, #devicesPage, #deviceToolsPage { background: #F4F6F8; }
+#toolCard, #settingsCard, #commandCard, #toolHeader, #toolPlaceholder { background: #FFFFFF; border-color: #E2E8F0; }
+#sectionTitle, #commandOutputHeader, #placeholderTitle { color: #374151; }
+#toolNav::item, #settingsNav::item { color: #6B7280; }
+#toolNavTabs::tab { color: #6B7280; }
+#toolNavTabs::tab:hover { background: transparent; color: #374151; }
+#toolNavTabs::tab:selected { background: transparent; color: #0F766E; border-bottom-color: #0F766E; }
+#commandToolbar { background: transparent; border: none; border-bottom: 1px solid #D8E0E8; }
+#commandFilterTabs::tab { color: #6B7280; }
+#commandFilterTabs::tab:hover { background: transparent; color: #374151; }
+#commandFilterTabs::tab:selected { background: transparent; color: #0F766E; border-bottom-color: #0F766E; }
+#commandList::item { color: #6B7280; }
+#commandList::item:hover { background: #F3F7F7; color: #374151; }
+#commandList::item:selected { background: #E9F8F5; color: #0F766E; }
+#commandRunnerMeta { color: #9CA3AF; }
+#commandDeleteButton:hover { background: #FEE2E2; }
+#commandSearch, #bridgeUrlPanel, #bridgeSettingsPanel, #bridgePcBox, #bridgeReceivedBox { background: #F8FAFC; border-color: #E2E8F0; }
+#serviceToggleButton { background: #0F8F83; border-color: #14B8A6; color: #FFFFFF; }
+#serviceToggleButton[running="true"] { background: #FEE2E2; border-color: #FECACA; color: #B91C1C; }
+#bridgePanelTitle { color: #374151; }
+#settingsActions { background: #FFFFFF; border-top-color: #E2E8F0; }
+#placeholderIcon { background: #E9F8F5; }
 """
 
 
@@ -372,7 +495,7 @@ class MainWindow(QMainWindow):
         self._next_job_token = 0
         self._job_callbacks: dict[int, tuple[object, object]] = {}
         self._async_threads: dict[int, threading.Thread] = {}
-        self.setWindowTitle(f"ADBLite v{APP_VERSION} — ADB · Scrcpy · 手机桥接 · 快捷命令")
+        self.setWindowTitle(f"ADBLite v{APP_VERSION}")
         self.resize(1120, 720)
         self._build_ui()
         self.scrcpy_log.connect(self._append_scrcpy_log)
@@ -386,27 +509,48 @@ class MainWindow(QMainWindow):
         self.timer.start(4000)
 
     def _build_ui(self) -> None:
-        self.apply_theme(self.repo.data.get("theme", "light"))
+        self.apply_theme(self.repo.data.get("theme", "dark"))
         root = QWidget(); root.setObjectName("root")
-        layout = QVBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
-        topbar = QWidget(); topbar.setObjectName("topbar")
-        header = QHBoxLayout(topbar); header.setContentsMargins(18, 0, 14, 0); header.setSpacing(8)
-        brand = QLabel("ADBLite"); brand.setObjectName("brandName"); header.addWidget(brand)
-        self.navigation = QTabBar(); self.navigation.setObjectName("navTabs")
-        self.navigation.setDrawBase(False)
-        self.navigation.setExpanding(False)
-        self.navigation.setUsesScrollButtons(False)
-        self.navigation.setElideMode(Qt.TextElideMode.ElideNone)
+        layout = QHBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
+
+        sidebar = QFrame(); sidebar.setObjectName("appSidebar"); sidebar.setFixedWidth(224)
+        sidebar_layout = QVBoxLayout(sidebar); sidebar_layout.setContentsMargins(14, 18, 14, 14); sidebar_layout.setSpacing(8)
+        brand_row = QHBoxLayout(); brand_row.setContentsMargins(4, 0, 4, 8); brand_row.setSpacing(8)
+        brand = QLabel("ADBLite"); brand.setObjectName("sidebarBrand"); brand_row.addWidget(brand)
+        version = QLabel(f"v{APP_VERSION}"); version.setObjectName("sidebarVersion"); brand_row.addWidget(version, 0, Qt.AlignmentFlag.AlignBottom)
+        brand_row.addStretch()
+        sidebar_layout.addLayout(brand_row)
+        workspace_label = QLabel("工作区"); workspace_label.setObjectName("sidebarSection"); sidebar_layout.addWidget(workspace_label)
+        self.navigation = QListWidget(); self.navigation.setObjectName("navList")
+        self.navigation.setSpacing(2); self.navigation.setIconSize(QSize(18, 18)); self.navigation.setMinimumHeight(210)
+        self.navigation.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         navigation_items = (
-            ("设备", "查看和管理已连接的 USB/无线 ADB 设备"),
-            ("设备工具", "应用管理、文件传输和手机桥接工具"),
-            ("快捷命令", "保存并运行常用 ADB、Scrcpy、CMD 和进程命令"),
-            ("设置", "配置外部工具路径、界面主题和运行参数"),
+            ("设备", "查看和管理已连接的 USB/无线 ADB 设备", "monitor"),
+            ("工具", "手机桥接、应用管理和文件管理", "tools"),
+            ("命令", "保存并运行常用 ADB、Scrcpy、CMD 和进程命令", "terminal"),
+            ("设置", "配置工具链、主题和运行参数", "settings"),
         )
-        for item, tooltip in navigation_items:
-            index = self.navigation.addTab(item)
-            self.navigation.setTabToolTip(index, tooltip)
-        header.addWidget(self.navigation)
+        for title, tooltip, icon_name in navigation_items:
+            item = QListWidgetItem(interface_icon(icon_name), title)
+            item.setToolTip(tooltip)
+            item.setData(Qt.ItemDataRole.UserRole, tooltip)
+            self.navigation.addItem(item)
+        sidebar_layout.addWidget(self.navigation)
+        sidebar_layout.addStretch(1)
+        sidebar_status = QFrame(); sidebar_status.setObjectName("sidebarStatus")
+        sidebar_status_layout = QVBoxLayout(sidebar_status); sidebar_status_layout.setContentsMargins(10, 8, 10, 8); sidebar_status_layout.setSpacing(2)
+        status_title = QLabel("ADB 状态"); status_title.setObjectName("sidebarStatusTitle"); sidebar_status_layout.addWidget(status_title)
+        self.sidebar_status_text = QLabel("正在初始化…"); self.sidebar_status_text.setObjectName("sidebarStatusText"); sidebar_status_layout.addWidget(self.sidebar_status_text)
+        sidebar_layout.addWidget(sidebar_status)
+        layout.addWidget(sidebar)
+
+        content_root = QWidget(); content_layout = QVBoxLayout(content_root); content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
+        topbar = QWidget(); topbar.setObjectName("topbar")
+        header = QHBoxLayout(topbar); header.setContentsMargins(24, 12, 18, 12); header.setSpacing(8)
+        title_column = QVBoxLayout(); title_column.setContentsMargins(0, 0, 0, 0); title_column.setSpacing(2)
+        self.page_title = QLabel("设备"); self.page_title.setObjectName("pageTitle"); title_column.addWidget(self.page_title)
+        self.page_subtitle = QLabel("查看和管理已连接的 USB/无线 ADB 设备"); self.page_subtitle.setObjectName("pageSubtitle"); title_column.addWidget(self.page_subtitle)
+        header.addLayout(title_column)
         header.addStretch()
         # The table is the single visible device selector. Keep this hidden
         # model combo so existing shell/command logic can share the selection.
@@ -429,15 +573,16 @@ class MainWindow(QMainWindow):
         self.theme_toggle = self._icon_button("moon", "切换到夜间模式", self._toggle_theme, "iconButton")
         header.addWidget(self.theme_toggle)
         self._update_theme_toggle()
-        layout.addWidget(topbar)
+        content_layout.addWidget(topbar)
 
         self.scrcpy_output = QPlainTextEdit(self); self.scrcpy_output.hide()
         self.page_stack = QStackedWidget()
         self.page_stack.addWidget(self._devices_page()); self.page_stack.addWidget(self._device_tools_page()); self.page_stack.addWidget(self._commands_page()); self.page_stack.addWidget(self._settings_page())
-        self.navigation.currentChanged.connect(self._switch_page)
-        self.navigation.setCurrentIndex(0)
+        self.navigation.currentRowChanged.connect(self._switch_page)
+        self.navigation.setCurrentRow(0)
         self._switch_page(0)
-        layout.addWidget(self.page_stack, 1)
+        content_layout.addWidget(self.page_stack, 1)
+        layout.addWidget(content_root, 1)
         for button in root.findChildren(QAbstractButton):
             self._configure_button_focus(button)
         self.setCentralWidget(root)
@@ -446,8 +591,18 @@ class MainWindow(QMainWindow):
 
     def _switch_page(self, index: int) -> None:
         self.page_stack.setCurrentIndex(index)
+        page_meta = (
+            ("设备", "查看和管理已连接的 USB/无线 ADB 设备"),
+            ("工具", "围绕当前设备执行桥接、应用和文件操作"),
+            ("命令", "把常用操作保存成可重复运行的工作流"),
+            ("设置", "配置工具链、主题和运行参数"),
+        )
+        if 0 <= index < len(page_meta):
+            self.page_title.setText(page_meta[index][0])
+            self.page_subtitle.setText(page_meta[index][1])
         on_devices_page = index == 0
         self.header_search_button.setVisible(on_devices_page)
+        self.header_refresh_button.setVisible(on_devices_page)
         if not on_devices_page:
             self.device_search.clear()
             self.device_search.hide()
@@ -746,6 +901,9 @@ class MainWindow(QMainWindow):
                 self.device_table.selectRow(row)
         self.device_table.blockSignals(False)
         self.device_stack.setCurrentIndex(0 if self.devices else 1)
+        if hasattr(self, "sidebar_status_text"):
+            connected_count = sum(device.state == "device" for device in self.devices)
+            self.sidebar_status_text.setText(f"{connected_count} 台设备已连接" if connected_count else "等待设备连接")
         self._filter_devices(self.device_search.text())
 
     @staticmethod
@@ -756,7 +914,10 @@ class MainWindow(QMainWindow):
 
     def _scrcpy_settings_box(self) -> QGroupBox:
         settings_box = QGroupBox()
+        settings_box.setObjectName("settingsCard")
         form = QFormLayout(settings_box)
+        form.setContentsMargins(18, 22, 18, 18)
+        form.setVerticalSpacing(12)
         form.addRow(self._section_title("Scrcpy 默认参数"))
         self.scrcpy_size = QSpinBox(); self.scrcpy_size.setRange(0, 8192); self.scrcpy_size.setValue(int(self.repo.data.get("scrcpy_max_size", 1920)))
         self.scrcpy_fps = QSpinBox(); self.scrcpy_fps.setRange(0, 240); self.scrcpy_fps.setValue(int(self.repo.data.get("scrcpy_max_fps", 60)))
@@ -776,32 +937,47 @@ class MainWindow(QMainWindow):
         return settings_box
 
     def _commands_page(self) -> QWidget:
-        page = QWidget(); page.setObjectName("contentPage"); outer = QVBoxLayout(page); outer.setContentsMargins(14, 14, 14, 14); outer.setSpacing(12)
-        layout = QHBoxLayout(); layout.setSpacing(14); outer.addLayout(layout, 1)
-        list_box = QGroupBox(); list_layout = QVBoxLayout(list_box); list_layout.setContentsMargins(12, 10, 12, 12); list_layout.setSpacing(10)
-        list_layout.addWidget(self._section_title("命令列表"))
-        self.command_list = QListWidget(); self.command_list.setObjectName("commandList"); self.command_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        list_layout.addWidget(self.command_list); layout.addWidget(list_box, 1)
+        page = QWidget(); page.setObjectName("contentPage"); outer = QVBoxLayout(page); outer.setContentsMargins(24, 20, 24, 24); outer.setSpacing(14)
+        command_toolbar = QFrame(); command_toolbar.setObjectName("commandToolbar")
+        toolbar_layout = QHBoxLayout(command_toolbar); toolbar_layout.setContentsMargins(0, 0, 0, 8); toolbar_layout.setSpacing(14)
+        toolbar_title = QLabel("命令集合"); toolbar_title.setObjectName("toolNavTitle"); toolbar_layout.addWidget(toolbar_title)
+        self.command_filter_tabs = QTabBar(); self.command_filter_tabs.setObjectName("commandFilterTabs"); self.command_filter_tabs.setDocumentMode(True); self.command_filter_tabs.setDrawBase(False); self.command_filter_tabs.setExpanding(False); self.command_filter_tabs.setUsesScrollButtons(False); self.command_filter_tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        for label, runner in (("全部", "all"), ("ADB", "adb"), ("Scrcpy", "scrcpy"), ("CMD", "cmd"), ("进程", "process")):
+            index = self.command_filter_tabs.addTab(label); self.command_filter_tabs.setTabData(index, runner)
+        self.command_filter_tabs.setCurrentIndex(0); self.command_filter_tabs.currentChanged.connect(lambda _index: self._filter_commands(self.command_search.text() if hasattr(self, "command_search") else "")); toolbar_layout.addWidget(self.command_filter_tabs, 1)
+        new_command = QPushButton("新建命令"); new_command.clicked.connect(self.new_command); toolbar_layout.addWidget(new_command)
+        outer.addWidget(command_toolbar)
 
-        panel = QGroupBox(); panel_layout = QVBoxLayout(panel); panel_layout.setContentsMargins(12, 10, 12, 12); panel_layout.setSpacing(10); layout.addWidget(panel, 2)
-        panel_layout.addWidget(self._section_title("命令编辑器"))
-        editor_area = QWidget(); editor = QFormLayout(editor_area); editor.setContentsMargins(0, 0, 0, 0); editor.setHorizontalSpacing(10); editor.setVerticalSpacing(8); editor.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.cmd_name = QLineEdit(); self.cmd_runner = QComboBox(); self.cmd_runner.addItems(["adb", "scrcpy", "cmd", "process"]); self.cmd_args = QPlainTextEdit(); self.cmd_args.setPlaceholderText("每行一个参数；cmd 模式填写完整命令"); self.cmd_args.setMinimumHeight(110)
-        args_label = QLabel("参数/命令"); args_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-        editor.addRow("名称", self.cmd_name); editor.addRow("执行器", self.cmd_runner); editor.addRow(args_label, self.cmd_args)
-        row = QHBoxLayout(); row.setSpacing(6)
-        new_command = QPushButton("新建")
-        new_command.clicked.connect(self.new_command)
+        workspace = QHBoxLayout(); workspace.setSpacing(14); outer.addLayout(workspace, 1)
+        list_box = QFrame(); list_box.setObjectName("commandCard"); list_box.setMinimumWidth(280); list_box.setMaximumWidth(340); list_layout = QVBoxLayout(list_box); list_layout.setContentsMargins(14, 12, 14, 12); list_layout.setSpacing(8)
+        list_header = QHBoxLayout(); list_header.addWidget(self._section_title("命令列表")); list_header.addStretch(); self.command_meta = QLabel("0 条"); self.command_meta.setObjectName("commandMeta"); list_header.addWidget(self.command_meta); list_layout.addLayout(list_header)
+        self.command_search = QLineEdit(); self.command_search.setObjectName("commandSearch"); self.command_search.setPlaceholderText("搜索命令名称"); self.command_search.setClearButtonEnabled(True); self.command_search.textChanged.connect(self._filter_commands); list_layout.addWidget(self.command_search)
+        self.command_list = QListWidget(); self.command_list.setObjectName("commandList"); self.command_list.setFocusPolicy(Qt.FocusPolicy.StrongFocus); self.command_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection); self.command_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded); self.command_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        list_layout.addWidget(self.command_list, 1); workspace.addWidget(list_box)
+
+        right_column = QVBoxLayout(); right_column.setSpacing(14); workspace.addLayout(right_column, 1)
+        panel = QFrame(); panel.setObjectName("commandCard"); panel_layout = QVBoxLayout(panel); panel_layout.setContentsMargins(16, 14, 16, 16); panel_layout.setSpacing(10); right_column.addWidget(panel)
+        editor_header = QHBoxLayout(); editor_header.addWidget(self._section_title("命令编辑器")); editor_header.addStretch(); editor_hint = QLabel("运行目标由设备页当前选择决定"); editor_hint.setObjectName("commandMeta"); editor_header.addWidget(editor_hint); panel_layout.addLayout(editor_header)
+        editor_area = QWidget(); editor = QFormLayout(editor_area); editor.setContentsMargins(0, 0, 0, 0); editor.setHorizontalSpacing(14); editor.setVerticalSpacing(10); editor.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop); editor.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop); editor.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.cmd_name = QLineEdit(); self.cmd_name.setPlaceholderText("例如：获取设备型号")
+        self.cmd_name.setMinimumHeight(38); self.cmd_name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.cmd_runner = QComboBox(); self.cmd_runner.setObjectName("commandRunner"); self.cmd_runner.addItems(["adb", "scrcpy", "cmd", "process"]); self.cmd_runner.setMinimumWidth(220)
+        self.cmd_args = QPlainTextEdit(); self.cmd_args.setPlaceholderText("每行一个参数；cmd 模式填写完整命令"); self.cmd_args.setMinimumHeight(120)
+        self.cmd_args.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        args_label = QLabel("参数 / 命令"); args_label.setObjectName("fieldHint")
+        editor.addRow("命令名称", self.cmd_name); editor.addRow("执行器", self.cmd_runner); editor.addRow(args_label, self.cmd_args)
+        actions = QHBoxLayout(); actions.setSpacing(8); actions.addStretch()
         save = QPushButton("保存"); save.clicked.connect(self.save_command)
-        run = QPushButton("运行"); run.setObjectName("primaryButton"); run.clicked.connect(self.run_command)
-        delete = QPushButton("删除"); delete.setObjectName("dangerButton"); delete.clicked.connect(self.delete_command)
-        for button in (new_command, save, run, delete):
-            row.addWidget(button, 1)
-        editor.addRow(row)
+        run = QPushButton("运行"); run.setObjectName("primaryButton"); run.setIcon(interface_icon("play")); run.setIconSize(QSize(15, 15)); run.clicked.connect(self.run_command)
+        actions.addWidget(save); actions.addWidget(run); editor.addRow(actions)
+        panel_layout.addWidget(editor_area)
 
-        splitter = QSplitter(Qt.Orientation.Vertical); splitter.setChildrenCollapsible(False); splitter.addWidget(editor_area)
-        self.command_output = QPlainTextEdit(); self.command_output.setReadOnly(True); self.command_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap); splitter.addWidget(self.command_output)
-        splitter.setStretchFactor(0, 3); splitter.setStretchFactor(1, 2); splitter.setSizes([360, 220]); panel_layout.addWidget(splitter, 1)
+        output_panel = QFrame(); output_panel.setObjectName("commandCard"); output_layout = QVBoxLayout(output_panel); output_layout.setContentsMargins(14, 12, 14, 14); output_layout.setSpacing(6)
+        output_header = QHBoxLayout(); output_label = QLabel("执行输出"); output_label.setObjectName("commandOutputHeader"); output_header.addWidget(output_label); output_header.addStretch()
+        copy_output = QPushButton("复制"); copy_output.clicked.connect(lambda: QApplication.clipboard().setText(self.command_output.toPlainText()))
+        clear_output = QPushButton("清空"); clear_output.clicked.connect(lambda: self.command_output.clear())
+        output_header.addWidget(copy_output); output_header.addWidget(clear_output); output_layout.addLayout(output_header)
+        self.command_output = QPlainTextEdit(); self.command_output.setReadOnly(True); self.command_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap); self.command_output.setMinimumHeight(190); output_layout.addWidget(self.command_output, 1); right_column.addWidget(output_panel, 1)
         self.command_list.currentRowChanged.connect(self.load_command)
         self._reload_commands()
         return page
@@ -828,28 +1004,47 @@ class MainWindow(QMainWindow):
         return page
 
     def _settings_page(self) -> QWidget:
-        page = QWidget(); page.setObjectName("contentPage"); layout = QVBoxLayout(page); layout.setContentsMargins(14, 14, 14, 14); layout.setSpacing(12)
+        page = QWidget(); page.setObjectName("contentPage"); layout = QVBoxLayout(page); layout.setContentsMargins(24, 20, 24, 0); layout.setSpacing(14)
+        intro = self._page_title("应用设置", "管理 ADBLite 的外观、工具链和投屏默认参数")
+        layout.addWidget(intro)
         content = QHBoxLayout(); content.setSpacing(14); layout.addLayout(content, 1)
-        box = QGroupBox(); form = QFormLayout(box); form.addRow(self._section_title("运行环境")); content.addWidget(box, 3)
-        self.theme_combo = QComboBox(); self.theme_combo.addItem("日间模式", "light"); self.theme_combo.addItem("夜间模式", "dark"); self.theme_combo.setCurrentIndex(0 if self.repo.data.get("theme", "light") == "light" else 1); self.theme_combo.currentIndexChanged.connect(lambda: self.apply_theme(self.theme_combo.currentData()))
-        form.addRow("界面主题", self.theme_combo)
+        nav_panel = QFrame(); nav_panel.setObjectName("settingsNavPanel"); nav_panel.setFixedWidth(160); nav_layout = QVBoxLayout(nav_panel); nav_layout.setContentsMargins(10, 12, 10, 10); nav_layout.setSpacing(8)
+        settings_nav_title = QLabel("设置分类"); settings_nav_title.setObjectName("toolNavTitle"); nav_layout.addWidget(settings_nav_title)
+        self.settings_nav = QListWidget(); self.settings_nav.setObjectName("settingsNav"); self.settings_nav.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        for title in ("常规", "工具链", "投屏", "数据与关于"):
+            self.settings_nav.addItem(QListWidgetItem(title))
+        nav_layout.addWidget(self.settings_nav, 1); content.addWidget(nav_panel)
+
+        self.settings_stack = QStackedWidget(); content.addWidget(self.settings_stack, 1)
+        general = QGroupBox(); general.setObjectName("settingsCard"); general_form = QFormLayout(general); general_form.setContentsMargins(18, 22, 18, 18); general_form.setVerticalSpacing(12); general_form.addRow(self._section_title("常规"))
+        self.theme_combo = QComboBox(); self.theme_combo.addItem("日间模式", "light"); self.theme_combo.addItem("夜间模式", "dark"); self.theme_combo.setCurrentIndex(0 if self.repo.data.get("theme", "dark") == "light" else 1); self.theme_combo.currentIndexChanged.connect(lambda: self.apply_theme(self.theme_combo.currentData()))
+        general_form.addRow("界面主题", self.theme_combo)
+        general_hint = QLabel("主题会立即应用，也会在保存设置时写入配置文件。"); general_hint.setObjectName("settingsDescription"); general_hint.setWordWrap(True); general_form.addRow(general_hint)
+        self.settings_stack.addWidget(general)
+
+        toolchain = QGroupBox(); toolchain.setObjectName("settingsCard"); tool_form = QFormLayout(toolchain); tool_form.setContentsMargins(18, 22, 18, 18); tool_form.setVerticalSpacing(12); tool_form.addRow(self._section_title("工具链"))
         self.adb_path = QLineEdit(self.repo.data.get("adb_path", "")); self.scrcpy_path = QLineEdit(self.repo.data.get("scrcpy_path", ""))
-        for label, field, key, binary in [("adb 路径", self.adb_path, "adb_path", "adb"), ("scrcpy 路径", self.scrcpy_path, "scrcpy_path", "scrcpy")]:
-            row = QHBoxLayout(); row.addWidget(field, 1); browse = QPushButton("选择"); browse.clicked.connect(lambda _, f=field: self.pick_binary(f)); row.addWidget(browse); form.addRow(label, row)
-        save = QPushButton("保存设置"); save.setObjectName("primaryButton"); save.clicked.connect(self.save_settings); form.addRow(save)
-        config_row = QHBoxLayout()
-        self.config_path = QLineEdit(str(self.repo.path)); self.config_path.setReadOnly(True); self.config_path.setToolTip("当前实际使用的配置文件路径"); config_row.addWidget(self.config_path, 1)
-        copy_config_path = QPushButton("复制路径"); copy_config_path.clicked.connect(lambda: QApplication.clipboard().setText(self.config_path.text())); config_row.addWidget(copy_config_path)
-        form.addRow("配置文件", config_row)
-        project_link = QLabel(f'<a href="{GITHUB_PROJECT_URL}">GitHub 开源项目主页：{GITHUB_PROJECT_URL}</a>')
-        project_link.setObjectName("projectLink")
-        project_link.setOpenExternalLinks(True)
-        project_link.setToolTip(GITHUB_PROJECT_URL)
-        form.addRow("项目地址", project_link)
-        form.addRow("软件版本", QLabel(f"v{APP_VERSION}"))
-        form.addRow("软件作者", QLabel("luobida"))
-        content.addWidget(self._scrcpy_settings_box(), 2)
+        for label, field in (("ADB 路径", self.adb_path), ("Scrcpy 路径", self.scrcpy_path)):
+            row = QHBoxLayout(); row.addWidget(field, 1); browse = QPushButton("选择"); browse.clicked.connect(lambda _, f=field: self.pick_binary(f)); row.addWidget(browse); tool_form.addRow(label, row)
+        tool_hint = QLabel("留空时自动从系统 PATH 查找；选择路径后建议重新刷新设备。"); tool_hint.setObjectName("settingsDescription"); tool_hint.setWordWrap(True); tool_form.addRow(tool_hint); self.settings_stack.addWidget(toolchain)
+        self.settings_stack.addWidget(self._scrcpy_settings_box())
+
+        about = QGroupBox(); about.setObjectName("settingsCard"); about_form = QFormLayout(about); about_form.setContentsMargins(18, 22, 18, 18); about_form.setVerticalSpacing(12); about_form.addRow(self._section_title("数据与关于"))
+        config_row = QHBoxLayout(); self.config_path = QLineEdit(str(self.repo.path)); self.config_path.setReadOnly(True); self.config_path.setToolTip("当前实际使用的配置文件路径"); config_row.addWidget(self.config_path, 1)
+        copy_config_path = QPushButton("复制路径"); copy_config_path.clicked.connect(lambda: QApplication.clipboard().setText(self.config_path.text())); config_row.addWidget(copy_config_path); about_form.addRow("配置文件", config_row)
+        project_link = QLabel(f'<a href="{GITHUB_PROJECT_URL}">GitHub 开源项目主页</a>'); project_link.setObjectName("projectLink"); project_link.setOpenExternalLinks(True); project_link.setToolTip(GITHUB_PROJECT_URL); about_form.addRow("项目地址", project_link)
+        about_form.addRow("软件版本", QLabel(f"v{APP_VERSION}")); about_form.addRow("软件作者", QLabel("luobida")); self.settings_stack.addWidget(about)
+        self.settings_nav.currentRowChanged.connect(self.settings_stack.setCurrentIndex); self.settings_nav.setCurrentRow(0)
+
+        settings_actions = QFrame(); settings_actions.setObjectName("settingsActions"); action_layout = QHBoxLayout(settings_actions); action_layout.setContentsMargins(24, 10, 24, 10); action_layout.addStretch(); save = QPushButton("保存设置"); save.setObjectName("primaryButton"); save.clicked.connect(self.save_settings); action_layout.addWidget(save); layout.addWidget(settings_actions)
         return page
+
+    @staticmethod
+    def _page_title(title: str, subtitle: str) -> QWidget:
+        widget = QWidget(); layout = QVBoxLayout(widget); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(3)
+        heading = QLabel(title); heading.setObjectName("toolTitle"); layout.addWidget(heading)
+        hint = QLabel(subtitle); hint.setObjectName("toolSubtitle"); hint.setWordWrap(True); layout.addWidget(hint)
+        return widget
 
     def pick_binary(self, field: QLineEdit) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择可执行文件", filter="Executable (*.exe);;All files (*)")
@@ -889,14 +1084,14 @@ class MainWindow(QMainWindow):
             terminal.set_theme(theme)
 
     def _toggle_theme(self) -> None:
-        current = self.repo.data.get("theme", "light")
+        current = self.repo.data.get("theme", "dark")
         self.apply_theme("light" if current == "dark" else "dark")
 
     def _update_theme_toggle(self) -> None:
         """Show the mode that clicking the theme shortcut will switch to."""
         if not hasattr(self, "theme_toggle"):
             return
-        is_dark = self.repo.data.get("theme", "light") == "dark"
+        is_dark = self.repo.data.get("theme", "dark") == "dark"
         self.theme_toggle.setIcon(interface_icon("sun" if is_dark else "moon"))
         self.theme_toggle.setToolTip("切换到日间模式" if is_dark else "切换到夜间模式")
         self.theme_toggle.setAccessibleName(self.theme_toggle.toolTip())
@@ -1033,6 +1228,9 @@ class MainWindow(QMainWindow):
         first_result = not self._initial_device_scan_done
         manual = self._finish_device_refresh()
         self._initial_device_scan_done = True
+        if hasattr(self, "sidebar_status_text"):
+            self.sidebar_status_text.setText("ADB 未就绪")
+            self.sidebar_status_text.setToolTip(message)
         if manual or first_result:
             self.statusBar().showMessage(f"ADB 刷新失败 · {message}")
         if hasattr(self, "device_output") and not self.devices:
@@ -1796,7 +1994,13 @@ class MainWindow(QMainWindow):
         if self.scrcpy_no_audio.isChecked(): args.append("--no-audio")
         if self.scrcpy_extra.text().strip(): args += shlex.split(self.scrcpy_extra.text(), posix=False)
         try:
-            process = ProcessRunner.start(self.resolver.resolve("scrcpy"), args)
+            scrcpy_path = self.resolver.resolve("scrcpy")
+            adb_path = self.resolver.resolve("adb")
+            if not scrcpy_path:
+                return self._show_error("未找到 scrcpy，请先在设置中配置路径")
+            if not adb_path:
+                return self._show_error("未找到 adb，请先在设置中配置路径")
+            process = ProcessRunner.start(scrcpy_path, args, env=self._scrcpy_environment(adb_path))
             self.scrcpy_starting.add(serial)
             handle = ScrcpyHandle(process=process, serial=serial, log_callback=self._emit_scrcpy_log)
             self.scrcpy_processes[serial] = handle
@@ -1814,6 +2018,16 @@ class MainWindow(QMainWindow):
                 daemon=True,
             ).start()
         except Exception as exc: self._show_error(str(exc))
+
+    @staticmethod
+    def _scrcpy_environment(adb_path: str) -> dict[str, str]:
+        """Give scrcpy an explicit ADB path when PATH is not inherited."""
+        environment = os.environ.copy()
+        environment["ADB"] = adb_path
+        adb_dir = str(Path(adb_path).parent)
+        current_path = environment.get("PATH", "")
+        environment["PATH"] = adb_dir + (os.pathsep + current_path if current_path else "")
+        return environment
 
     def _wait_for_scrcpy_window(self, serial: str, handle: ScrcpyHandle) -> None:
         deadline = time.monotonic() + 90
@@ -1954,7 +2168,53 @@ class MainWindow(QMainWindow):
 
     def _reload_commands(self) -> None:
         self.command_list.clear()
-        for command in self.repo.commands(): self.command_list.addItem(command.name)
+        commands = self.repo.commands()
+        for row, command in enumerate(commands):
+            item = QListWidgetItem(command.name)
+            item.setToolTip(f"{command.runner} · {command.name}")
+            item.setData(Qt.ItemDataRole.UserRole, command.runner)
+            self.command_list.addItem(item)
+            row_widget = QWidget()
+            row_widget.setObjectName("commandRow")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(10, 7, 6, 7)
+            row_layout.setSpacing(8)
+            title = QLabel(command.name)
+            title.setToolTip(command.name)
+            title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            row_layout.addWidget(title)
+            runner = QLabel(command.runner.upper())
+            runner.setObjectName("commandRunnerMeta")
+            row_layout.addWidget(runner)
+            delete_button = QToolButton()
+            delete_button.setObjectName("commandDeleteButton")
+            delete_button.setIcon(interface_icon("delete"))
+            delete_button.setIconSize(QSize(14, 14))
+            delete_button.setToolTip("删除命令")
+            delete_button.clicked.connect(lambda _checked=False, index=row: self.delete_command(index))
+            row_layout.addWidget(delete_button)
+            item.setSizeHint(row_widget.sizeHint())
+            self.command_list.setItemWidget(item, row_widget)
+        if hasattr(self, "command_meta"):
+            self.command_meta.setText(f"{len(commands)} 条")
+        if hasattr(self, "command_search"):
+            self._filter_commands(self.command_search.text())
+
+    def _filter_commands(self, text: str) -> None:
+        query = text.strip().casefold()
+        runner_filter = "all"
+        if hasattr(self, "command_filter_tabs"):
+            runner_filter = str(self.command_filter_tabs.tabData(self.command_filter_tabs.currentIndex()) or "all")
+        visible = 0
+        for row in range(self.command_list.count()):
+            item = self.command_list.item(row)
+            runner_matches = runner_filter == "all" or item.data(Qt.ItemDataRole.UserRole) == runner_filter
+            matches = runner_matches and (not query or query in item.text().casefold())
+            item.setHidden(not matches)
+            visible += int(matches)
+        if hasattr(self, "command_meta"):
+            total = self.command_list.count()
+            self.command_meta.setText(f"{visible}/{total} 条" if query else f"{total} 条")
 
     def load_command(self, index: int) -> None:
         commands = self.repo.commands()
@@ -1980,8 +2240,9 @@ class MainWindow(QMainWindow):
         else: commands.append(command)
         self.repo.save_commands(commands); self._reload_commands()
 
-    def delete_command(self) -> None:
-        row = self.command_list.currentRow(); commands = self.repo.commands()
+    def delete_command(self, row: int | None = None) -> None:
+        row = self.command_list.currentRow() if row is None else row
+        commands = self.repo.commands()
         if 0 <= row < len(commands): commands.pop(row); self.repo.save_commands(commands); self._reload_commands()
 
     def run_command(self) -> None:
@@ -1991,7 +2252,9 @@ class MainWindow(QMainWindow):
         if command.runner == "adb": fn = lambda: self.adb.run(command.args, serial)
         elif command.runner == "scrcpy":
             scrcpy_target = ["--serial", serial] if serial else []
-            fn = lambda: ProcessRunner.run(self.resolver.resolve("scrcpy"), [*scrcpy_target, *command.args])
+            scrcpy_path = self.resolver.resolve("scrcpy")
+            adb_path = self.resolver.resolve("adb")
+            fn = lambda: ProcessRunner.run(scrcpy_path, [*scrcpy_target, *command.args], env=self._scrcpy_environment(adb_path))
         elif command.runner == "process": fn = lambda: ProcessRunner.run(command.args[0], command.args[1:])
         else:
             rendered = command.command.replace("${serial}", serial).replace("${adb}", self.resolver.resolve("adb")).replace("${scrcpy}", self.resolver.resolve("scrcpy"))
